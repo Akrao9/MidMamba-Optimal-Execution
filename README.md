@@ -10,11 +10,12 @@ The project is now focused on execution quality, not price-direction classificat
 |------|--------|
 | Databento MBP-10 ingestion | Local utilities retained for manifest and DBN inspection |
 | Stationary LOB features | Reusable feature code in `src/midmamba/data/mbp10_features.py` |
+| Episode sampling | `MBP10WindowLoader` samples finite contiguous replay windows from MBP-10 frames |
 | LOB simulator | Discrete MBP-10 replay env and continuous PPO-facing env in `src/midmamba/env/mbp10_execution_env.py` |
 | Mamba backbone | Reusable spatial stem and temporal Mamba/GRU blocks in `src/midmamba/models/lob_mamba.py` |
 | RL actor-critic head | Initial `LOBMambaRLExecutionAgent` module scaffolded |
 | PPO training | Next implementation target after replay/data-loader smoke tests |
-| Evaluation | TWAP, immediate execution, implementation shortfall, and trajectory plots |
+| Evaluation | Immediate and TWAP baseline helpers with implementation shortfall metrics |
 
 ## Data Position
 
@@ -30,6 +31,12 @@ Two environment interfaces are available:
 
 - `MBP10ExecutionEnv`: low-level discrete replay environment for physics tests.
 - `MidMambaExecutionEnv`: continuous-action PPO-facing environment using a dataloader `sample_window()` contract.
+- `MBP10WindowLoader`: real-data bridge that creates finite feature windows plus raw MBP-10 rows for the PPO environment.
+
+Baseline helpers are available in `midmamba.eval`:
+
+- `run_immediate_execution()`
+- `run_twap_execution()`
 
 ## Layout
 
@@ -42,8 +49,10 @@ Two environment interfaces are available:
 | `scripts/check_manifest.py` | Count expected DBN files from manifests |
 | `scripts/inspect_dbn.py` | Inspect a local DBN sample without loading a full day |
 | `scripts/check_colab_env.py` | GPU, Mamba, and DBN environment checks |
-| `src/midmamba/data/` | MBP-10 market fields and stationary feature helpers |
+| `scripts/run_baseline_smoke.py` | Run immediate and TWAP baselines on one sampled DBN replay window |
+| `src/midmamba/data/` | MBP-10 market fields, stationary features, and replay window sampling |
 | `src/midmamba/env/` | Historical execution replay environment |
+| `src/midmamba/eval/` | Execution baselines and evaluation helpers |
 | `src/midmamba/models/` | LOB spatial stem, temporal blocks, and actor-critic model |
 | `tests/` | Lightweight unit tests for retained reusable pieces |
 
@@ -55,6 +64,7 @@ Two environment interfaces are available:
 ```bash
 python scripts/check_manifest.py
 python scripts/inspect_dbn.py
+python scripts/run_baseline_smoke.py --sample-rows 100000 --window-steps 1000
 python -m pytest tests -q
 ```
 

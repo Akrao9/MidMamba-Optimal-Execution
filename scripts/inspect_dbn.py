@@ -27,7 +27,7 @@ def main() -> int:
     print(f"inspecting_file={target}")
 
     store = db.DBNStore.from_file(str(target))
-    df = next(iter(store.to_df(count=5)))
+    df = store.to_df(count=5)
 
     print(f"sample_row_count={len(df)}")
     print(f"column_count={len(df.columns)}")

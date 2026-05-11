@@ -22,10 +22,11 @@ Build an execution environment over Databento MBP-10 snapshots.
 Transform raw MBP-10 into stationary tensors for the environment and model.
 
 - Decode `.dbn.zst` files with Databento `DBNStore`.
+- Use `MBP10WindowLoader` to create finite replay windows with `(features, raw_lob)` output for `MidMambaExecutionEnv`.
 - Use MBP-10 columns directly: `bid_px_00..09`, `ask_px_00..09`, `bid_sz_00..09`, `ask_sz_00..09`, counts, timestamps, and actions.
 - Build relative prices around the instantaneous mid, `log1p` sizes and counts, OBI, MLOFI, spread, microprice, and timing features.
 - Append internal execution state at every step: remaining time fraction, remaining inventory fraction, recent fill fraction, and optional previous action features.
-- Produce windowed PyTorch tensors without materializing full-month arrays in RAM.
+- Produce windowed PyTorch tensors without materializing full-month arrays in RAM. For large DBN files, use explicit row samples or a future streaming/day iterator before scaling.
 
 ## Phase 3: Mamba-2 Actor-Critic
 
@@ -48,6 +49,11 @@ Train against implementation shortfall.
 
 Benchmark the trained policy on unseen October 2025 days.
 
-- Compare against TWAP and immediate aggressive execution.
+- Compare against TWAP and immediate aggressive execution via `midmamba.eval.run_twap_execution()` and `midmamba.eval.run_immediate_execution()`.
+- Use `scripts/run_baseline_smoke.py` for the first real DBN baseline JSON smoke test.
 - Report implementation shortfall in bps, fill completion, notional traded, average spread paid, and slippage decomposition.
 - Plot execution trajectory against microprice, spread, and visible depth.
+
+## Current Next Build
+
+The simulator, window loader, and simple baselines are now the foundation. The next implementation target is a small PPO smoke loop over `MidMambaExecutionEnv`, starting with synthetic or sampled real windows before scaling to full October 2025 days.

@@ -13,6 +13,7 @@ from .mbp10_features import (
     build_feature_frame,
     drop_invalid_rows,
 )
+from .window_loader import MBP10WindowLoader
 
 __all__ = [
     "ASK_CT",
@@ -26,4 +27,5 @@ __all__ = [
     "book_integrity_report",
     "build_feature_frame",
     "drop_invalid_rows",
+    "MBP10WindowLoader",
 ]

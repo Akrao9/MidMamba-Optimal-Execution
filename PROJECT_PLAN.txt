@@ -81,10 +81,12 @@ Implemented and retained:
 
 - Databento manifest and DBN inspection scripts
 - MBP-10 market fields and stationary feature helpers
+- real-data MBP-10 window loader for finite replay episodes
 - Mamba LOB spatial stem
 - Mamba/GRU temporal backbone
 - actor-critic model scaffold
 - initial MBP-10 execution environment
+- immediate execution and TWAP baseline helpers
 - unit tests for features, model outputs, gradients, and simulator mechanics
 
 Important current files:
@@ -92,8 +94,11 @@ Important current files:
 - scripts/check_manifest.py
 - scripts/inspect_dbn.py
 - scripts/check_colab_env.py
+- scripts/run_baseline_smoke.py
 - src/midmamba/data/mbp10_features.py
+- src/midmamba/data/window_loader.py
 - src/midmamba/env/mbp10_execution_env.py
+- src/midmamba/eval/baselines.py
 - src/midmamba/models/lob_mamba.py
 - docs/DATABENTO_REFERENCE.md
 - docs/SIMULATOR_REFERENCES.md
@@ -151,7 +156,6 @@ Current implementation:
 
 Remaining Phase 1 work:
 
-- Add real Databento day/episode loader
 - Add fixed-cadence resampling option, such as 100 ms or 1 s
 - Add richer passive fill modes:
   - conservative
@@ -241,6 +245,14 @@ Create utilities that produce execution episodes:
 - choose parent order size
 - choose child slice fraction
 - return MBP-10 replay frame plus episode metadata
+
+Current implementation:
+
+- MBP10WindowLoader builds stationary feature frames and samples contiguous
+  replay windows through the contract expected by MidMambaExecutionEnv:
+  sample_window(n_steps) -> (features, raw_lob).
+- from_dbn_file(path, sample_rows=N) supports safe sampled DBN smoke tests
+  without loading a full day.
 
 Memory requirements:
 
@@ -414,6 +426,15 @@ Plots:
 - top-of-book depth
 - action markers
 
+Current implementation:
+
+- run_immediate_execution()
+- run_twap_execution()
+- BaselineResult with fill, cash, terminal penalty, and implementation
+  shortfall metrics
+- scripts/run_baseline_smoke.py creates a JSON report for one sampled DBN
+  replay window
+
 
 Colab Execution Plan
 --------------------
@@ -444,12 +465,11 @@ Drive saving:
 Current Next Steps
 ------------------
 
-1. Add episode builder for real Databento MBP-10 days.
-2. Add immediate execution and TWAP baselines.
-3. Add evaluation report JSON for one real day.
-4. Add PPO rollout buffer.
-5. Add PPO training script.
-6. Add Colab notebook cells for simulator smoke, baselines, PPO smoke, and sync.
+1. Add PPO rollout buffer.
+2. Add PPO training script.
+3. Add fixed-cadence resampling for 100 ms and 1 s execution windows.
+4. Add richer evaluation plots and trajectory JSON for real DBN days.
+5. Add Colab notebook cells for simulator smoke, baselines, PPO smoke, and sync.
 
 
 Definition of Done

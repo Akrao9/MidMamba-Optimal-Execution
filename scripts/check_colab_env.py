@@ -105,7 +105,7 @@ def run_dbn_inspect_check(root: Path) -> dict:
     target = candidates[0]
     try:
         store = db.DBNStore.from_file(str(target))
-        df = next(iter(store.to_df(count=5)))
+        df = store.to_df(count=5)
         result["file"] = str(target)
         result["sample_row_count"] = int(len(df))
         result["column_count"] = int(len(df.columns))

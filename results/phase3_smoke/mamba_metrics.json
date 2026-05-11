@@ -1,0 +1,84 @@
+{
+  "config": {
+    "phase1_root": "results/phase1_smoke",
+    "qa_summary": "results/phase1_smoke/stats/qa_summary.json",
+    "output_dir": "results/phase3_smoke",
+    "horizons": [
+      10
+    ],
+    "cells": [
+      "A",
+      "D"
+    ],
+    "seq_len": 128,
+    "d_model": 64,
+    "architecture": "lobmambav2",
+    "spatial_stem": true,
+    "n_layers": 2,
+    "dropout": 0.0,
+    "pool_mode": "gated_attention",
+    "backend": "gru",
+    "mlp_expand": 2,
+    "regression_head": true,
+    "reg_loss_weight": 0.2,
+    "batch_size": 16,
+    "epochs": 1,
+    "lr": 0.001,
+    "weight_decay": 0.01,
+    "grad_clip": 1.0,
+    "max_train_windows": 512,
+    "max_test_windows": 256,
+    "lazy_windows": false,
+    "seed": 42,
+    "device": "cpu"
+  },
+  "device": "cpu",
+  "runs": {
+    "h10": {
+      "cells": {
+        "A": {
+          "lazy_windows": false,
+          "n_train_windows": 512,
+          "n_test_windows": 0,
+          "train_macro_f1": 0.451014085517292,
+          "test_macro_f1": null,
+          "checkpoint": "/Users/ak/Documents/genaiexperiments/midmamba/results/phase3_smoke/checkpoints/h10_cellA.pt",
+          "architecture": "lobmambav2",
+          "feature_groups": {
+            "uses_fallback": false,
+            "side_width": 4,
+            "pair_width": 3,
+            "global_width": 27,
+            "has_side": true,
+            "has_pair": true
+          },
+          "mamba_kwargs": {},
+          "mlp_expand": 2,
+          "regression_head": true,
+          "reg_loss_weight": 0.2
+        },
+        "D": {
+          "lazy_windows": false,
+          "n_train_windows": 512,
+          "n_test_windows": 256,
+          "train_macro_f1": 0.46593751444468917,
+          "test_macro_f1": 0.10710382513661203,
+          "checkpoint": "/Users/ak/Documents/genaiexperiments/midmamba/results/phase3_smoke/checkpoints/h10_cellD.pt",
+          "architecture": "lobmambav2",
+          "feature_groups": {
+            "uses_fallback": false,
+            "side_width": 4,
+            "pair_width": 3,
+            "global_width": 27,
+            "has_side": true,
+            "has_pair": true
+          },
+          "mamba_kwargs": {},
+          "mlp_expand": 2,
+          "regression_head": true,
+          "reg_loss_weight": 0.2
+        }
+      }
+    }
+  }
+}

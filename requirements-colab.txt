@@ -1,0 +1,20 @@
+--pre
+--index-url https://download.pytorch.org/whl/nightly/cu128
+torch
+torchvision
+torchaudio
+
+--extra-index-url https://pypi.org/simple
+causal-conv1d>=1.4.0
+databento
+lightgbm
+mamba-ssm
+matplotlib
+numpy
+pandas
+pyarrow
+scikit-learn
+seaborn
+tqdm
+torchao
+wandb

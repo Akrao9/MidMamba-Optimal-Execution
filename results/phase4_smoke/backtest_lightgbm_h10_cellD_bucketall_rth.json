@@ -1,0 +1,99 @@
+{
+  "config": {
+    "phase1_root": "results/phase1_smoke",
+    "phase2_models_dir": "results/phase2_smoke/models",
+    "phase3_checkpoints_dir": "results/phase3_smoke/checkpoints",
+    "qa_summary": "results/phase1_smoke/stats/qa_summary.json",
+    "output_dir": "results/phase4_smoke",
+    "model_type": "lightgbm",
+    "horizon": 10,
+    "cell": "D",
+    "horizon_events": 10,
+    "thresholds": [
+      0.4,
+      0.55,
+      0.7
+    ],
+    "n_threshold_points": 10,
+    "min_trades_for_best": 5,
+    "inference_batch_size": 64,
+    "device": "cpu"
+  },
+  "horizon": 10,
+  "cell": "D",
+  "horizon_events": 10,
+  "bucket": "all_rth",
+  "bucket_spec_et": {
+    "start": "00:00:00",
+    "end": "23:59:59"
+  },
+  "n_test_rows": 199989,
+  "n_entry_eligible_rows": 199989,
+  "exits_after_bucket": 0,
+  "thresholds": [
+    0.4,
+    0.55,
+    0.7
+  ],
+  "min_trades_for_best": 5,
+  "lightgbm": {
+    "model_type": "lightgbm",
+    "model_path": "/Users/ak/Documents/genaiexperiments/midmamba/results/phase2_smoke/models/h10_cellD.txt",
+    "n_test_rows": 199989,
+    "n_entry_eligible_rows": 199989,
+    "curves": [
+      {
+        "tau": 0.4,
+        "n_trades": 13358.0,
+        "n_long": 6143.0,
+        "n_short": 7215.0,
+        "total_pnl": -125.0306396484375,
+        "mean_pnl": -0.00935998200692001,
+        "total_pnl_bps": -1876.6622844321662,
+        "mean_pnl_bps": -0.14048976526666912,
+        "win_rate": 0.017218146429106154,
+        "sharpe": -263.15880246426923,
+        "max_drawdown": 125.0206298828125
+      },
+      {
+        "tau": 0.55,
+        "n_trades": 8765.0,
+        "n_long": 4130.0,
+        "n_short": 4635.0,
+        "total_pnl": -75.20819091796875,
+        "mean_pnl": -0.00858051236942028,
+        "total_pnl_bps": -1128.8356317725322,
+        "mean_pnl_bps": -0.12878900533628435,
+        "win_rate": 0.025556189389617796,
+        "sharpe": -182.37527456861216,
+        "max_drawdown": 75.19818115234375
+      },
+      {
+        "tau": 0.7,
+        "n_trades": 4807.0,
+        "n_long": 2178.0,
+        "n_short": 2629.0,
+        "total_pnl": -36.2042236328125,
+        "mean_pnl": -0.0075315630607057414,
+        "total_pnl_bps": -543.4065190666024,
+        "mean_pnl_bps": -0.11304483442201008,
+        "win_rate": 0.038901601830663615,
+        "sharpe": -111.82540654245656,
+        "max_drawdown": 36.1942138671875
+      }
+    ],
+    "best": {
+      "tau": 0.7,
+      "n_trades": 4807.0,
+      "n_long": 2178.0,
+      "n_short": 2629.0,
+      "total_pnl": -36.2042236328125,
+      "mean_pnl": -0.0075315630607057414,
+      "total_pnl_bps": -543.4065190666024,
+      "mean_pnl_bps": -0.11304483442201008,
+      "win_rate": 0.038901601830663615,
+      "sharpe": -111.82540654245656,
+      "max_drawdown": 36.1942138671875
+    }
+  }
+}

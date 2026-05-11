@@ -1,0 +1,20 @@
+{
+  "phase1_root": "results/phase1",
+  "phase2_models_dir": "results/phase2/models",
+  "phase3_checkpoints_dir": "results/phase3/checkpoints",
+  "qa_summary": "results/phase1/stats/qa_summary.json",
+  "output_dir": "results/phase4",
+  "model_type": "compare",
+  "streaming": true,
+  "stream_status_every_days": 1,
+  "horizon": 10,
+  "cell": "D",
+  "horizon_events": 10,
+  "thresholds": null,
+  "n_threshold_points": 25,
+  "min_trades_for_best": 30,
+  "inference_batch_size": 256,
+  "time_buckets_et": {
+    "open": {"start": "09:30:00", "end": "10:30:00"}
+  }
+}

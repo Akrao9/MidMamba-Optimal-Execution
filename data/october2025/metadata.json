@@ -1,0 +1,28 @@
+{
+    "version": 1,
+    "job_id": "XNAS-20251226-VDEQ579WQT",
+    "query": {
+        "dataset": "XNAS.ITCH",
+        "schema": "mbp-10",
+        "symbols": [
+            "SPY"
+        ],
+        "stype_in": "raw_symbol",
+        "stype_out": "instrument_id",
+        "start": 1759276800000000000,
+        "end": 1761886800000000000,
+        "limit": null,
+        "encoding": "dbn",
+        "compression": "zstd"
+    },
+    "customizations": {
+        "pretty_px": false,
+        "pretty_ts": false,
+        "map_symbols": false,
+        "split_symbols": false,
+        "split_duration": "day",
+        "split_size": null,
+        "packaging": null,
+        "delivery": "download"
+    }
+}

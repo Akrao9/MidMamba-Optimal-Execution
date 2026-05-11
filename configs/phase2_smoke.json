@@ -1,0 +1,22 @@
+{
+  "phase1_root": "results/phase1_smoke",
+  "qa_summary": "results/phase1_smoke/stats/qa_summary.json",
+  "output_dir": "results/phase2_smoke",
+  "save_models": true,
+  "horizons": [10],
+  "cells": ["A", "B", "D"],
+  "lgbm": {
+    "objective": "multiclass",
+    "metric": "multi_logloss",
+    "verbosity": -1,
+    "num_leaves": 31,
+    "learning_rate": 0.1,
+    "feature_fraction": 0.9,
+    "bagging_fraction": 0.9,
+    "bagging_freq": 1,
+    "min_child_samples": 500,
+    "n_estimators": 100,
+    "early_stopping_rounds": 15,
+    "val_day_fraction": 0.2
+  }
+}

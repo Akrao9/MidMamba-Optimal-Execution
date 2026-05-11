@@ -1,0 +1,198 @@
+{
+  "months": {
+    "march2025": {
+      "files": 1,
+      "rows_raw": 9123675,
+      "rows_rth": 200000,
+      "rows_clean": 200000,
+      "integrity": {
+        "bid_monotonic_fail": 0,
+        "ask_monotonic_fail": 0,
+        "crossed_or_locked": 0,
+        "top_level_nan_rows": 0
+      }
+    },
+    "october2025": {
+      "files": 1,
+      "rows_raw": 4004579,
+      "rows_rth": 200000,
+      "rows_clean": 200000,
+      "integrity": {
+        "bid_monotonic_fail": 0,
+        "ask_monotonic_fail": 0,
+        "crossed_or_locked": 0,
+        "top_level_nan_rows": 0
+      }
+    }
+  },
+  "config": {
+    "data_root": "data",
+    "output_root": "results/phase1_smoke",
+    "months": [
+      "march2025",
+      "october2025"
+    ],
+    "horizons": [
+      10
+    ],
+    "train_day_fraction": 0.7,
+    "regular_trading_hours_et": {
+      "start": "09:30:30",
+      "end": "15:59:30"
+    },
+    "drop_invalid_book_rows": true,
+    "max_files_per_month": 1,
+    "sample_rows_per_file": 200000
+  },
+  "rows_total_after_feature_dropna": 799996,
+  "label_summary": {
+    "h10": {
+      "A": {
+        "alpha": 1e-09,
+        "class_counts": {
+          "0": 52308,
+          "1": 96749,
+          "2": 50932
+        },
+        "rows": 199989,
+        "month_balance": {
+          "march2025": {
+            "0": 52308,
+            "1": 96749,
+            "2": 50932
+          }
+        },
+        "day_balance": {
+          "march2025|2025-03-03": {
+            "0": 52308,
+            "1": 96749,
+            "2": 50932
+          }
+        }
+      },
+      "B": {
+        "alpha": 1e-09,
+        "class_counts": {
+          "0": 35116,
+          "1": 129434,
+          "2": 35439
+        },
+        "rows": 199989,
+        "month_balance": {
+          "october2025": {
+            "0": 35116,
+            "1": 129434,
+            "2": 35439
+          }
+        },
+        "day_balance": {
+          "october2025|2025-10-01": {
+            "0": 35116,
+            "1": 129434,
+            "2": 35439
+          }
+        }
+      },
+      "D": {
+        "alpha": 1e-09,
+        "class_counts": {
+          "0": 87424,
+          "1": 226183,
+          "2": 86371
+        },
+        "rows": 399978,
+        "month_balance": {
+          "march2025": {
+            "0": 52308,
+            "1": 96749,
+            "2": 50932
+          },
+          "october2025": {
+            "0": 35116,
+            "1": 129434,
+            "2": 35439
+          }
+        },
+        "day_balance": {
+          "march2025|2025-03-03": {
+            "0": 52308,
+            "1": 96749,
+            "2": 50932
+          },
+          "october2025|2025-10-01": {
+            "0": 35116,
+            "1": 129434,
+            "2": 35439
+          }
+        }
+      }
+    }
+  },
+  "experiment_cells": {
+    "A": {
+      "train_days": [
+        "2025-03-03"
+      ],
+      "test_days": []
+    },
+    "B": {
+      "train_days": [
+        "2025-10-01"
+      ],
+      "test_days": []
+    },
+    "D": {
+      "train_days": [
+        "2025-03-03"
+      ],
+      "test_days": [
+        "2025-10-01"
+      ]
+    }
+  },
+  "split_summary": {
+    "h10": {
+      "A": {
+        "train_days": [
+          "2025-03-03"
+        ],
+        "test_days": [],
+        "train_rows": 199989,
+        "test_rows": 0
+      },
+      "B": {
+        "train_days": [
+          "2025-10-01"
+        ],
+        "test_days": [],
+        "train_rows": 199989,
+        "test_rows": 0
+      },
+      "D": {
+        "train_days": [
+          "2025-03-03"
+        ],
+        "test_days": [
+          "2025-10-01"
+        ],
+        "train_rows": 199989,
+        "test_rows": 199989
+      }
+    }
+  },
+  "normalization": "per_experiment_cell_train_days_only",
+  "alpha_tuning": "per_experiment_cell_train_returns_only",
+  "time_index": "ts_event",
+  "ts_recv": "preserved as metadata column",
+  "feature_boundaries": "diff/rolling features computed per instrument_id/trade_date_et session",
+  "label_boundaries": "future returns computed per instrument_id/trade_date_et session",
+  "burst_thresholds": {
+    "h10": {
+      "A": 901.2103820800762,
+      "B": 701.2022888183591,
+      "D": 901.2103820800762
+    }
+  },
+  "burst_indicator": "p95 arrival_rate_200 threshold fit per horizon/cell on train days only",
+  "datasets": "one_parquet_per_horizon_per_cell_phase1_h{H}_cell{C}.parquet"
+}

@@ -1,0 +1,22 @@
+{
+  "data_root": "data",
+  "output_root": "results/phase1",
+  "months": [
+    "march2025",
+    "october2025"
+  ],
+  "horizons": [
+    10
+  ],
+  "cells": [
+    "D"
+  ],
+  "train_day_fraction": 0.7,
+  "regular_trading_hours_et": {
+    "start": "09:30:30",
+    "end": "15:59:30"
+  },
+  "drop_invalid_book_rows": true,
+  "max_files_per_month": null,
+  "sample_rows_per_file": null
+}

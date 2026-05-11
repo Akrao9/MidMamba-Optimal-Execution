@@ -1,0 +1,33 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.DS_Store
+.idea/
+.vscode/
+
+# Large / generated (keep manifests; ignore bulk DBN if you copy them here)
+data/**/*.dbn.zst
+
+# Large generated artifacts (keep small JSON if you want them in git)
+results/**/_intermediate/
+results/**/datasets/*.parquet
+results/**/models/
+results/**/checkpoints/
+colab_logs/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Weights / local checkpoints (optional)
+*.pt
+*.pth
+checkpoints/

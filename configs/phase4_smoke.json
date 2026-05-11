@@ -1,0 +1,16 @@
+{
+  "phase1_root": "results/phase1_smoke",
+  "phase2_models_dir": "results/phase2_smoke/models",
+  "phase3_checkpoints_dir": "results/phase3_smoke/checkpoints",
+  "qa_summary": "results/phase1_smoke/stats/qa_summary.json",
+  "output_dir": "results/phase4_smoke",
+  "model_type": "lightgbm",
+  "horizon": 10,
+  "cell": "D",
+  "horizon_events": 10,
+  "thresholds": [0.4, 0.55, 0.7],
+  "n_threshold_points": 10,
+  "min_trades_for_best": 5,
+  "inference_batch_size": 64,
+  "device": "cpu"
+}

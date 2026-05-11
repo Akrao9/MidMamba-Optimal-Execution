@@ -27,6 +27,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dbn-file", type=Path, default=None, help="DBN file to sample. Defaults to first data/**/*.dbn.zst.")
     parser.add_argument("--sample-rows", type=int, default=100_000, help="Rows to decode from the DBN file.")
+    parser.add_argument("--chunk-rows", type=int, default=None, help="Decode DBN in chunks of this many rows until the window has enough rows.")
+    parser.add_argument("--max-chunks", type=int, default=None, help="Maximum number of DBN chunks to scan when --chunk-rows is set.")
     parser.add_argument("--window-steps", type=int, default=1_000, help="Contiguous replay rows to evaluate.")
     parser.add_argument("--start", type=int, default=0, help="Start row inside the sampled frame.")
     parser.add_argument("--random-start", action="store_true", help="Randomly choose a valid start row after filters.")
@@ -56,13 +58,37 @@ def main() -> int:
         f"start={args.start} random_start={args.random_start} rth_only={args.rth_only}"
     )
     try:
-        loader = MBP10WindowLoader.from_dbn_file(
-            dbn_file,
-            sample_rows=args.sample_rows,
-            rth_start=args.rth_start if args.rth_only else None,
-            rth_end=args.rth_end if args.rth_only else None,
-            seed=args.seed,
-        )
+        if args.chunk_rows is None:
+            loader = MBP10WindowLoader.from_dbn_file(
+                dbn_file,
+                sample_rows=args.sample_rows,
+                rth_start=args.rth_start if args.rth_only else None,
+                rth_end=args.rth_end if args.rth_only else None,
+                seed=args.seed,
+            )
+            scan_mode = "first_rows"
+        else:
+            scan_mode = "chunked"
+
+            def _progress(info: dict[str, int]) -> None:
+                print(
+                    "[baseline] "
+                    f"chunk={info['chunk_index']} "
+                    f"decoded_rows={info['decoded_rows']:,} "
+                    f"kept_rows={info['kept_rows']:,}",
+                    flush=True,
+                )
+
+            loader = MBP10WindowLoader.from_dbn_file_chunks(
+                dbn_file,
+                chunk_rows=args.chunk_rows,
+                min_rows=args.window_steps,
+                max_chunks=args.max_chunks,
+                rth_start=args.rth_start if args.rth_only else None,
+                rth_end=args.rth_end if args.rth_only else None,
+                seed=args.seed,
+                progress_callback=_progress,
+            )
     except ValueError as exc:
         print(f"Could not build window loader: {exc}", file=sys.stderr)
         return 1
@@ -94,6 +120,9 @@ def main() -> int:
     report = {
         "dbn_file": str(dbn_file),
         "sample_rows": args.sample_rows,
+        "scan_mode": scan_mode,
+        "chunk_rows": args.chunk_rows,
+        "max_chunks": args.max_chunks,
         "window_steps": args.window_steps,
         "available_rows_after_filters": loader.n_rows,
         "start": start,

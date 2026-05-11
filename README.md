@@ -65,13 +65,13 @@ Baseline helpers are available in `midmamba.eval`:
 python scripts/check_manifest.py
 python scripts/inspect_dbn.py
 python scripts/run_baseline_smoke.py --sample-rows 100000 --window-steps 1000
-python scripts/run_baseline_smoke.py --sample-rows 1000000 --window-steps 2000 --rth-only --random-start --parent-quantity 100000 --twap-slices 100
+python scripts/run_baseline_smoke.py --chunk-rows 100000 --window-steps 2000 --rth-only --random-start --parent-quantity 100000 --twap-slices 100
 python -m pytest tests -q
 ```
 
-For RTH-only local runs, increase `--sample-rows` enough to reach 09:30 ET in
-the file. If the first decoded rows are premarket-only, the script will ask for
-more rows instead of throwing a traceback.
+For RTH-only local runs, prefer `--chunk-rows` so the script decodes DBN data in
+pieces and stops once enough post-filter rows are available. If the scan still
+does not reach 09:30 ET, increase `--max-chunks` or run it in Colab.
 
 ## Reference Repos
 

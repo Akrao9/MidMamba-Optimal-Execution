@@ -23,6 +23,7 @@ results/**/datasets/*.parquet
 results/**/models/
 results/**/checkpoints/
 results/baseline_smoke*.json
+results/baseline_*_local.json
 colab_logs/
 *.log
 

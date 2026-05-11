@@ -142,6 +142,70 @@ def test_window_loader_from_dbn_file_accepts_dataframe_iterator(monkeypatch: pyt
     assert len(loader.raw_lob) == len(frame)
 
 
+def test_window_loader_from_dbn_file_chunks_scans_until_enough_rth_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    premarket = _book(2)
+    premarket_idx = pd.date_range("2025-10-01 13:00:00", periods=2, freq="100ms", tz="UTC", name="ts_recv")
+    premarket.index = premarket_idx
+    premarket["ts_event"] = premarket_idx
+    premarket["ts_recv"] = premarket_idx
+
+    rth = _book(3)
+    rth_idx = pd.date_range("2025-10-01 13:30:00", periods=3, freq="100ms", tz="UTC", name="ts_recv")
+    rth.index = rth_idx
+    rth["ts_event"] = rth_idx
+    rth["ts_recv"] = rth_idx
+    progress: list[dict[str, int]] = []
+
+    class _Store:
+        @staticmethod
+        def from_file(path: str) -> "_Store":
+            return _Store()
+
+        def to_df(self, count: int):
+            assert count == 2
+            yield premarket
+            yield rth
+
+    monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))
+
+    loader = MBP10WindowLoader.from_dbn_file_chunks(
+        "/tmp/fake.dbn.zst",
+        chunk_rows=2,
+        min_rows=3,
+        rth_start="09:30:00",
+        rth_end="16:00:00",
+        progress_callback=progress.append,
+    )
+
+    assert loader.n_rows == 3
+    assert progress == [
+        {"chunk_index": 1, "decoded_rows": 2, "kept_rows": 0},
+        {"chunk_index": 2, "decoded_rows": 5, "kept_rows": 3},
+    ]
+    assert loader.raw_lob.iloc[0]["ts_recv"] == rth_idx[0]
+
+
+def test_window_loader_from_dbn_file_chunks_reports_insufficient_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = _book(2)
+
+    class _Store:
+        @staticmethod
+        def from_file(path: str) -> "_Store":
+            return _Store()
+
+        def to_df(self, count: int):
+            yield frame
+
+    monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))
+
+    with pytest.raises(ValueError, match="only 2 rows available"):
+        MBP10WindowLoader.from_dbn_file_chunks("/tmp/fake.dbn.zst", chunk_rows=2, min_rows=3)
+
+
 def test_window_loader_from_dbn_file_validates_sample_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Store:
         @staticmethod

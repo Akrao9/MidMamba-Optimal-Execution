@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -106,6 +106,66 @@ class MBP10WindowLoader:
             rth_end=rth_end,
             seed=seed,
         )
+
+    @classmethod
+    def from_dbn_file_chunks(
+        cls,
+        path: str | Path,
+        *,
+        chunk_rows: int = 100_000,
+        min_rows: int = 2,
+        max_chunks: int | None = None,
+        feature_columns: Sequence[str] | None = None,
+        rth_start: str | None = None,
+        rth_end: str | None = None,
+        seed: int | None = None,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
+    ) -> "MBP10WindowLoader":
+        if chunk_rows <= 0:
+            raise ValueError("chunk_rows must be positive")
+        if min_rows < 2:
+            raise ValueError("min_rows must be at least 2")
+        if max_chunks is not None and max_chunks <= 0:
+            raise ValueError("max_chunks must be positive")
+        if (rth_start is None) != (rth_end is None):
+            raise ValueError("rth_start and rth_end must be provided together")
+
+        import databento as db  # type: ignore
+
+        store = db.DBNStore.from_file(str(path))
+        chunks: list[pd.DataFrame] = []
+        decoded_rows = 0
+        kept_rows = 0
+
+        for chunk_index, df in enumerate(store.to_df(count=int(chunk_rows)), start=1):
+            framed = _event_time_frame(df)
+            decoded_rows += int(len(framed))
+            if rth_start is not None and rth_end is not None:
+                framed = apply_rth_filter(framed, rth_start, rth_end)
+            if len(framed) > 0:
+                chunks.append(framed)
+                kept_rows += int(len(framed))
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "chunk_index": chunk_index,
+                        "decoded_rows": decoded_rows,
+                        "kept_rows": kept_rows,
+                    }
+                )
+            if kept_rows >= min_rows:
+                break
+            if max_chunks is not None and chunk_index >= max_chunks:
+                break
+
+        if kept_rows < min_rows:
+            raise ValueError(
+                f"only {kept_rows} rows available after filters; need at least {min_rows}. "
+                "Increase --max-chunks/--chunk-rows, disable --rth-only, or reduce --window-steps."
+            )
+
+        book = pd.concat(chunks, axis=0).sort_index(kind="stable")
+        return cls.from_book(book, feature_columns=feature_columns, seed=seed)
 
     def sample_window(self, n_steps: int, *, start: int | None = None) -> tuple[np.ndarray, pd.DataFrame]:
         if n_steps < 2:

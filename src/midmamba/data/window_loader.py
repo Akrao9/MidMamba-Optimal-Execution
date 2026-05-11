@@ -121,6 +121,32 @@ class MBP10WindowLoader:
         seed: int | None = None,
         progress_callback: Callable[[dict[str, int]], None] | None = None,
     ) -> "MBP10WindowLoader":
+        return cls.from_dbn_files_chunks(
+            [path],
+            chunk_rows=chunk_rows,
+            min_rows=min_rows,
+            max_chunks=max_chunks,
+            feature_columns=feature_columns,
+            rth_start=rth_start,
+            rth_end=rth_end,
+            seed=seed,
+            progress_callback=progress_callback,
+        )
+
+    @classmethod
+    def from_dbn_files_chunks(
+        cls,
+        paths: Sequence[str | Path],
+        *,
+        chunk_rows: int = 100_000,
+        min_rows: int = 2,
+        max_chunks: int | None = None,
+        feature_columns: Sequence[str] | None = None,
+        rth_start: str | None = None,
+        rth_end: str | None = None,
+        seed: int | None = None,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
+    ) -> "MBP10WindowLoader":
         if chunk_rows <= 0:
             raise ValueError("chunk_rows must be positive")
         if min_rows < 2:
@@ -129,30 +155,40 @@ class MBP10WindowLoader:
             raise ValueError("max_chunks must be positive")
         if (rth_start is None) != (rth_end is None):
             raise ValueError("rth_start and rth_end must be provided together")
+        if not paths:
+            raise ValueError("paths must not be empty")
 
         import databento as db  # type: ignore
 
-        store = db.DBNStore.from_file(str(path))
         chunks: list[pd.DataFrame] = []
         decoded_rows = 0
         kept_rows = 0
+        chunk_index = 0
 
-        for chunk_index, df in enumerate(store.to_df(count=int(chunk_rows)), start=1):
-            framed = _event_time_frame(df)
-            decoded_rows += int(len(framed))
-            if rth_start is not None and rth_end is not None:
-                framed = apply_rth_filter(framed, rth_start, rth_end)
-            if len(framed) > 0:
-                chunks.append(framed)
-                kept_rows += int(len(framed))
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "chunk_index": chunk_index,
-                        "decoded_rows": decoded_rows,
-                        "kept_rows": kept_rows,
-                    }
-                )
+        for file_index, path in enumerate(paths, start=1):
+            store = db.DBNStore.from_file(str(path))
+            for df in store.to_df(count=int(chunk_rows)):
+                chunk_index += 1
+                framed = _event_time_frame(df)
+                decoded_rows += int(len(framed))
+                if rth_start is not None and rth_end is not None:
+                    framed = apply_rth_filter(framed, rth_start, rth_end)
+                if len(framed) > 0:
+                    chunks.append(framed)
+                    kept_rows += int(len(framed))
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "file_index": file_index,
+                            "chunk_index": chunk_index,
+                            "decoded_rows": decoded_rows,
+                            "kept_rows": kept_rows,
+                        }
+                    )
+                if kept_rows >= min_rows:
+                    break
+                if max_chunks is not None and chunk_index >= max_chunks:
+                    break
             if kept_rows >= min_rows:
                 break
             if max_chunks is not None and chunk_index >= max_chunks:

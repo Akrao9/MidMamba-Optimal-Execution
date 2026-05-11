@@ -23,6 +23,10 @@ from midmamba.models import LOBMambaRLExecutionAgent
 from midmamba.rl import collect_rollout, ppo_update
 
 
+def _json_safe_config(config: dict) -> dict:
+    return json.loads(json.dumps(config, default=str))
+
+
 def synthetic_book(n_rows: int, *, seed: int = 1) -> pd.DataFrame:
     if n_rows < 2:
         raise ValueError("n_rows must be at least 2")
@@ -48,15 +52,21 @@ def synthetic_book(n_rows: int, *, seed: int = 1) -> pd.DataFrame:
 
 
 def build_loader(args: argparse.Namespace) -> MBP10WindowLoader:
-    if args.dbn_file is None:
+    if args.dbn_file is not None and args.dbn_glob is not None:
+        raise ValueError("use either --dbn-file or --dbn-glob, not both")
+    if args.dbn_file is None and args.dbn_glob is None:
         print(f"[ppo] using synthetic MBP-10 book rows={args.synthetic_rows}")
         return MBP10WindowLoader.from_book(synthetic_book(args.synthetic_rows, seed=args.seed), seed=args.seed)
 
-    dbn_file = args.dbn_file
-    print(f"[ppo] loading {dbn_file}")
+    dbn_paths = [args.dbn_file] if args.dbn_file is not None else sorted(ROOT.glob(args.dbn_glob))
+    if not dbn_paths:
+        raise FileNotFoundError(f"no DBN files matched {args.dbn_glob!r}")
+    print(f"[ppo] loading_files={len(dbn_paths)} first={dbn_paths[0]}")
     if args.chunk_rows is None:
+        if len(dbn_paths) > 1:
+            raise ValueError("--dbn-glob requires --chunk-rows")
         return MBP10WindowLoader.from_dbn_file(
-            dbn_file,
+            dbn_paths[0],
             sample_rows=args.sample_rows,
             rth_start=args.rth_start if args.rth_only else None,
             rth_end=args.rth_end if args.rth_only else None,
@@ -66,16 +76,17 @@ def build_loader(args: argparse.Namespace) -> MBP10WindowLoader:
     def _progress(info: dict[str, int]) -> None:
         print(
             "[ppo] "
+            f"file={info.get('file_index', 1)} "
             f"chunk={info['chunk_index']} "
             f"decoded_rows={info['decoded_rows']:,} "
             f"kept_rows={info['kept_rows']:,}",
             flush=True,
         )
 
-    return MBP10WindowLoader.from_dbn_file_chunks(
-        dbn_file,
+    return MBP10WindowLoader.from_dbn_files_chunks(
+        dbn_paths,
         chunk_rows=args.chunk_rows,
-        min_rows=max(args.execution_steps, args.window_steps),
+        min_rows=args.loader_rows or max(args.execution_steps, args.window_steps),
         max_chunks=args.max_chunks,
         rth_start=args.rth_start if args.rth_only else None,
         rth_end=args.rth_end if args.rth_only else None,
@@ -87,9 +98,11 @@ def build_loader(args: argparse.Namespace) -> MBP10WindowLoader:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dbn-file", type=Path, default=None, help="Optional real DBN file. Defaults to synthetic data.")
+    parser.add_argument("--dbn-glob", default=None, help="Repo-relative glob for multiple DBN files, e.g. data/march2025/*.dbn.zst.")
     parser.add_argument("--sample-rows", type=int, default=100_000)
     parser.add_argument("--chunk-rows", type=int, default=None)
     parser.add_argument("--max-chunks", type=int, default=None)
+    parser.add_argument("--loader-rows", type=int, default=None, help="Rows to keep after filters for multi-window training.")
     parser.add_argument("--rth-only", action="store_true")
     parser.add_argument("--rth-start", default="09:30:00")
     parser.add_argument("--rth-end", default="16:00:00")
@@ -98,6 +111,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-steps", type=int, default=1_000, help="Minimum real-data rows to load in chunked mode.")
     parser.add_argument("--parent-quantity", type=float, default=1_000.0)
     parser.add_argument("--side", choices=["buy", "sell"], default="buy")
+    parser.add_argument(
+        "--fill-model",
+        choices=["proportional", "optimistic", "conservative", "random"],
+        default="proportional",
+        help="Passive fill model. Use random for per-episode domain randomization.",
+    )
     parser.add_argument("--seq-len", type=int, default=16)
     parser.add_argument("--rollout-steps", type=int, default=128)
     parser.add_argument("--updates", type=int, default=3)
@@ -114,6 +133,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=Path("results/ppo_smoke_metrics.json"))
     parser.add_argument("--checkpoint-path", type=Path, default=None)
+    parser.add_argument("--checkpoint-every", type=int, default=0, help="Write checkpoint every N updates when --checkpoint-path is set.")
     return parser.parse_args()
 
 
@@ -134,6 +154,7 @@ def main() -> int:
         execution_steps=args.execution_steps,
         initial_inventory=args.parent_quantity,
         side=args.side,
+        fill_model=args.fill_model,
     )
     n_features = int(env.observation_space.shape[0])
     agent = LOBMambaRLExecutionAgent(
@@ -153,6 +174,7 @@ def main() -> int:
         f"seq_len={args.seq_len} rollout_steps={args.rollout_steps} updates={args.updates}"
     )
 
+    run_config = _json_safe_config(vars(args) | {"device": str(device), "n_features": n_features, "loader_rows": loader.n_rows})
     history: list[dict[str, float | int]] = []
     for update in range(1, args.updates + 1):
         batch, rollout_metrics = collect_rollout(
@@ -186,9 +208,14 @@ def main() -> int:
             f"entropy={row['entropy']:.6f}",
             flush=True,
         )
+        if args.checkpoint_path is not None and args.checkpoint_every > 0 and update % args.checkpoint_every == 0:
+            ckpt_path = args.checkpoint_path if args.checkpoint_path.is_absolute() else ROOT / args.checkpoint_path
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({"model": agent.state_dict(), "config": run_config, "update": update}, ckpt_path)
+            print(f"[ppo] wrote checkpoint update={update} path={ckpt_path}", flush=True)
 
     report = {
-        "config": vars(args) | {"device": str(device), "n_features": n_features, "loader_rows": loader.n_rows},
+        "config": run_config,
         "history": history,
     }
     output_path.write_text(json.dumps(report, indent=2, default=str))

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from midmamba.env import MBP10ExecutionEnv, MidMambaExecutionEnv, walk_book
+from midmamba.env import MBP10ExecutionEnv, MidMambaExecutionEnv, passive_touch_fill, walk_book
 
 
 def _book(n: int = 4) -> pd.DataFrame:
@@ -77,6 +77,38 @@ def test_env_passive_buy_uses_proportional_queue_fill() -> None:
     assert info["remaining_inventory"] == pytest.approx(75.0)
     assert info["last_fill_price"] == pytest.approx(100.0)
     assert reward > 0.0
+
+
+def test_passive_fill_modes_bracket_proportional_fill() -> None:
+    book = _book(3)
+    book.loc[book.index[1], "bid_sz_00"] = 50.0
+    row = book.iloc[0]
+    next_row = book.iloc[1]
+
+    conservative = passive_touch_fill(row, next_row, "buy", 100.0, fill_model="conservative")
+    proportional = passive_touch_fill(row, next_row, "buy", 100.0, fill_model="proportional")
+    optimistic = passive_touch_fill(row, next_row, "buy", 100.0, fill_model="optimistic")
+
+    assert conservative.filled_qty == pytest.approx(0.0)
+    assert proportional.filled_qty == pytest.approx(25.0)
+    assert optimistic.filled_qty == pytest.approx(50.0)
+
+
+def test_midmamba_execution_env_randomizes_fill_model_by_episode() -> None:
+    book = _book(4)
+    features = np.zeros((4, 2), dtype=np.float32)
+    env = MidMambaExecutionEnv(
+        _WindowLoader(features, book),
+        execution_steps=4,
+        initial_inventory=100.0,
+        fill_model=("conservative", "optimistic"),
+    )
+
+    _, info_1 = env.reset(seed=1)
+    _, info_2 = env.reset(seed=2)
+
+    assert info_1["fill_model"] in {"conservative", "optimistic"}
+    assert info_2["fill_model"] in {"conservative", "optimistic"}
 
 
 def test_env_wait_to_end_applies_terminal_inventory_penalty() -> None:

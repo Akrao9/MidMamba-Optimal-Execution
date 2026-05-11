@@ -181,10 +181,41 @@ def test_window_loader_from_dbn_file_chunks_scans_until_enough_rth_rows(
 
     assert loader.n_rows == 3
     assert progress == [
-        {"chunk_index": 1, "decoded_rows": 2, "kept_rows": 0},
-        {"chunk_index": 2, "decoded_rows": 5, "kept_rows": 3},
+        {"file_index": 1, "chunk_index": 1, "decoded_rows": 2, "kept_rows": 0},
+        {"file_index": 1, "chunk_index": 2, "decoded_rows": 5, "kept_rows": 3},
     ]
     assert loader.raw_lob.iloc[0]["ts_recv"] == rth_idx[0]
+
+
+def test_window_loader_from_dbn_files_chunks_reads_multiple_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame_a = _book(2)
+    frame_b = _book(3)
+    opened: list[str] = []
+
+    class _Store:
+        def __init__(self, frame: pd.DataFrame) -> None:
+            self.frame = frame
+
+        @staticmethod
+        def from_file(path: str) -> "_Store":
+            opened.append(path)
+            return _Store(frame_a if path.endswith("a.dbn.zst") else frame_b)
+
+        def to_df(self, count: int):
+            yield self.frame
+
+    monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))
+
+    loader = MBP10WindowLoader.from_dbn_files_chunks(
+        ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"],
+        chunk_rows=2,
+        min_rows=5,
+    )
+
+    assert opened == ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"]
+    assert loader.n_rows == 5
 
 
 def test_window_loader_from_dbn_file_chunks_reports_insufficient_rows(

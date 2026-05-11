@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run immediate and TWAP execution baselines on one sampled MBP-10 window."""
+"""Run execution baselines on one sampled MBP-10 window."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from midmamba.data import MBP10WindowLoader
-from midmamba.eval import run_immediate_execution, run_twap_execution
+from midmamba.eval import run_almgren_chriss_execution, run_immediate_execution, run_twap_execution
 
 
 def _default_dbn(root: Path) -> Path | None:
@@ -38,6 +38,10 @@ def main() -> int:
     parser.add_argument("--side", choices=["buy", "sell"], default="buy")
     parser.add_argument("--parent-quantity", type=float, default=10_000.0)
     parser.add_argument("--twap-slices", type=int, default=20)
+    parser.add_argument("--ac-slices", type=int, default=None, help="Almgren-Chriss slices. Defaults to --twap-slices.")
+    parser.add_argument("--ac-risk-aversion", type=float, default=1e-6)
+    parser.add_argument("--ac-volatility", type=float, default=0.02)
+    parser.add_argument("--ac-temporary-impact", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=Path("results/baseline_smoke.json"))
     args = parser.parse_args()
@@ -116,6 +120,15 @@ def main() -> int:
         parent_quantity=args.parent_quantity,
         n_slices=args.twap_slices,
     )
+    almgren_chriss = run_almgren_chriss_execution(
+        raw_lob,
+        side=args.side,
+        parent_quantity=args.parent_quantity,
+        n_slices=args.ac_slices or args.twap_slices,
+        risk_aversion=args.ac_risk_aversion,
+        volatility=args.ac_volatility,
+        temporary_impact=args.ac_temporary_impact,
+    )
 
     report = {
         "dbn_file": str(dbn_file),
@@ -133,9 +146,14 @@ def main() -> int:
         "side": args.side,
         "parent_quantity": args.parent_quantity,
         "twap_slices": args.twap_slices,
+        "ac_slices": args.ac_slices or args.twap_slices,
+        "ac_risk_aversion": args.ac_risk_aversion,
+        "ac_volatility": args.ac_volatility,
+        "ac_temporary_impact": args.ac_temporary_impact,
         "baselines": {
             "immediate": immediate.to_dict(),
             "twap": twap.to_dict(),
+            "almgren_chriss": almgren_chriss.to_dict(),
         },
     }
     output_path.write_text(json.dumps(report, indent=2))

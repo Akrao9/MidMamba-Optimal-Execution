@@ -67,13 +67,51 @@ python scripts/check_manifest.py
 python scripts/inspect_dbn.py
 python scripts/run_baseline_smoke.py --sample-rows 100000 --window-steps 1000
 python scripts/run_baseline_smoke.py --chunk-rows 100000 --window-steps 2000 --rth-only --random-start --parent-quantity 100000 --twap-slices 100
-python scripts/train_ppo_smoke.py --updates 1 --rollout-steps 32 --execution-steps 16
+python scripts/train_ppo_smoke.py --updates 1 --rollout-steps 32 --execution-steps 16 --fill-model random
 python -m pytest tests -q
 ```
 
 For RTH-only local runs, prefer `--chunk-rows` so the script decodes DBN data in
 pieces and stops once enough post-filter rows are available. If the scan still
 does not reach 09:30 ET, increase `--max-chunks` or run it in Colab.
+
+Colab/GPU full-scale starting point:
+
+```bash
+python scripts/train_ppo_smoke.py \
+  --dbn-glob 'data/march2025/*.dbn.zst' \
+  --chunk-rows 250000 \
+  --loader-rows 2000000 \
+  --rth-only \
+  --backend mamba \
+  --device auto \
+  --d-model 128 \
+  --n-layers 3 \
+  --updates 200 \
+  --rollout-steps 4096 \
+  --execution-steps 300 \
+  --seq-len 64 \
+  --parent-quantity 100000 \
+  --fill-model random \
+  --checkpoint-path results/checkpoints/mamba_march_ppo.pt \
+  --checkpoint-every 10 \
+  --output-json results/ppo_mamba_march_metrics.json
+
+python scripts/evaluate_execution.py \
+  --dbn-glob 'data/october2025/*.dbn.zst' \
+  --chunk-rows 250000 \
+  --loader-rows 1000000 \
+  --rth-only \
+  --random-start \
+  --window-steps 5000 \
+  --execution-steps 300 \
+  --parent-quantity 100000 \
+  --twap-slices 300 \
+  --checkpoint-path results/checkpoints/mamba_march_ppo.pt \
+  --policy-episodes 20 \
+  --seq-len 64 \
+  --output-json results/october_eval_mamba_ppo.json
+```
 
 ## Reference Repos
 

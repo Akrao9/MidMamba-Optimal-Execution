@@ -11,6 +11,7 @@ Build an execution environment over Databento MBP-10 snapshots.
 - Track cash, filled quantity, remaining inventory, remaining time, and current MBP-10 book state.
 - Fill market orders by walking the visible bid/ask levels.
 - Fill one-step passive limit orders with an MBP-compatible proportional queue estimate. MBP-10 lacks individual order IDs, so queue position is modeled, not recovered.
+- Training can randomize passive fill assumptions across conservative, proportional, and optimistic modes.
 - Emit observations, rewards, done flags, and diagnostic info with a Gymnasium-style interface.
 - Use `MBP10ExecutionEnv` for low-level discrete physics tests.
 - Use `MidMambaExecutionEnv` for PPO-facing continuous actions:
@@ -23,6 +24,7 @@ Transform raw MBP-10 into stationary tensors for the environment and model.
 
 - Decode `.dbn.zst` files with Databento `DBNStore`.
 - Use `MBP10WindowLoader` to create finite replay windows with `(features, raw_lob)` output for `MidMambaExecutionEnv`.
+- Use chunked DBN scanning and multi-file globs for March/October runs to avoid full-month materialization.
 - Use MBP-10 columns directly: `bid_px_00..09`, `ask_px_00..09`, `bid_sz_00..09`, `ask_sz_00..09`, counts, timestamps, and actions.
 - Build relative prices around the instantaneous mid, `log1p` sizes and counts, OBI, MLOFI, spread, microprice, and timing features.
 - Append internal execution state at every step: remaining time fraction, remaining inventory fraction, recent fill fraction, and optional previous action features.
@@ -44,17 +46,18 @@ Train against implementation shortfall.
 - Rollouts store observations, actions, log probabilities, values, rewards, and done flags.
 - Use GAE for advantages.
 - Update with PPO clipped objective, value loss, and entropy regularization.
-- Initial smoke implementation: `src/midmamba/rl/ppo.py` and `scripts/train_ppo_smoke.py`.
+- Initial implementation: `src/midmamba/rl/ppo.py` and `scripts/train_ppo_smoke.py`, with Mamba backend, checkpoints, DBN globs, and fill-model randomization.
 
 ## Phase 5: Evaluation
 
 Benchmark the trained policy on unseen October 2025 days.
 
-- Compare against TWAP and immediate aggressive execution via `midmamba.eval.run_twap_execution()` and `midmamba.eval.run_immediate_execution()`.
+- Compare against TWAP, immediate aggressive execution, and Almgren-Chriss via `midmamba.eval`.
 - Use `scripts/run_baseline_smoke.py` for the first real DBN baseline JSON smoke test.
+- Use `scripts/evaluate_execution.py` for October held-out evaluation and optional PPO checkpoint evaluation.
 - Report implementation shortfall in bps, fill completion, notional traded, average spread paid, and slippage decomposition.
 - Plot execution trajectory against microprice, spread, and visible depth.
 
 ## Current Next Build
 
-The simulator, window loader, baselines, and PPO smoke loop are now in place. The next implementation target is running PPO on chunked RTH DBN windows, then adding fixed-cadence resampling and checkpointed multi-window training.
+The simulator, window loader, baselines, and PPO loop are now in place. The next implementation target is running full Mamba PPO on March RTH DBN windows in Colab, then evaluating the checkpoint on October RTH DBN windows.

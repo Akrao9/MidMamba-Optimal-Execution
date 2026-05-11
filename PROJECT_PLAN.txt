@@ -86,7 +86,7 @@ Implemented and retained:
 - Mamba/GRU temporal backbone
 - actor-critic model scaffold
 - initial MBP-10 execution environment
-- immediate execution and TWAP baseline helpers
+- immediate execution, TWAP, and Almgren-Chriss baseline helpers
 - PPO smoke rollout/update utilities
 - unit tests for features, model outputs, gradients, and simulator mechanics
 
@@ -97,6 +97,7 @@ Important current files:
 - scripts/check_colab_env.py
 - scripts/run_baseline_smoke.py
 - scripts/train_ppo_smoke.py
+- scripts/evaluate_execution.py
 - src/midmamba/data/mbp10_features.py
 - src/midmamba/data/window_loader.py
 - src/midmamba/env/mbp10_execution_env.py
@@ -377,7 +378,8 @@ Current implementation:
 - src/midmamba/rl/ppo.py implements squashed-Gaussian continuous actions, GAE,
   rollout collection, and PPO updates.
 - scripts/train_ppo_smoke.py runs a small synthetic-data PPO smoke train and can
-  optionally use sampled DBN windows.
+  optionally use sampled DBN windows. It supports Mamba backend, checkpointing,
+  multi-file DBN globs, and per-episode fill-model randomization.
 
 Training safety:
 
@@ -403,7 +405,10 @@ Required baselines:
 2. TWAP:
    - split parent order evenly across the window
    - execute each slice at fixed intervals
-3. Optional POV/VWAP-like baseline:
+3. Almgren-Chriss:
+   - risk-aware deterministic inventory trajectory
+   - standard execution benchmark expected by reviewers
+4. Optional POV/VWAP-like baseline:
    - participate based on observed volume or depth proxy
 
 Metrics:
@@ -440,10 +445,13 @@ Current implementation:
 
 - run_immediate_execution()
 - run_twap_execution()
+- run_almgren_chriss_execution()
 - BaselineResult with fill, cash, terminal penalty, and implementation
   shortfall metrics
 - scripts/run_baseline_smoke.py creates a JSON report for one sampled DBN
   replay window
+- scripts/evaluate_execution.py evaluates baselines and optional PPO checkpoints
+  on held-out DBN windows
 
 
 Colab Execution Plan
@@ -475,10 +483,11 @@ Drive saving:
 Current Next Steps
 ------------------
 
-1. Run PPO smoke against one chunked RTH DBN window.
-2. Add fixed-cadence resampling for 100 ms and 1 s execution windows.
-3. Add richer evaluation plots and trajectory JSON for real DBN days.
-4. Add checkpointed PPO training over multiple sampled windows.
+1. Run full Mamba PPO training in Colab on March RTH DBN windows.
+2. Evaluate the checkpoint on October RTH DBN windows versus TWAP, immediate,
+   and Almgren-Chriss.
+3. Add fixed-cadence resampling for 100 ms and 1 s execution windows.
+4. Add richer evaluation plots and trajectory JSON for real DBN days.
 5. Add Colab notebook cells for simulator smoke, baselines, PPO smoke, and sync.
 
 

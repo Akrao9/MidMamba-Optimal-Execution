@@ -25,6 +25,9 @@ results/**/checkpoints/
 results/baseline_smoke*.json
 results/baseline_*_local.json
 results/ppo_smoke*.json
+results/ppo_*_local.json
+results/eval*_local.json
+results/*eval*_local.json
 colab_logs/
 *.log
 

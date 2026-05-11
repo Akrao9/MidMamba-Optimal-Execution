@@ -4,7 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from midmamba.eval import run_immediate_execution, run_twap_execution
+from midmamba.eval import (
+    almgren_chriss_schedule,
+    run_almgren_chriss_execution,
+    run_immediate_execution,
+    run_twap_execution,
+)
 
 
 def _book(n: int = 5) -> pd.DataFrame:
@@ -55,3 +60,19 @@ def test_twap_execution_applies_terminal_penalty_when_window_is_too_short() -> N
 def test_twap_execution_rejects_non_positive_slices() -> None:
     with pytest.raises(ValueError, match="n_slices must be positive"):
         run_twap_execution(_book(), n_slices=0)
+
+
+def test_almgren_chriss_zero_risk_schedule_matches_twap() -> None:
+    schedule = almgren_chriss_schedule(100.0, 5, risk_aversion=0.0)
+
+    assert np.allclose(schedule, np.full(5, 20.0))
+    assert schedule.sum() == pytest.approx(100.0)
+
+
+def test_almgren_chriss_execution_returns_baseline_result() -> None:
+    result = run_almgren_chriss_execution(_book(6), parent_quantity=100.0, n_slices=5)
+
+    assert result.name == "almgren_chriss"
+    assert result.steps == 5
+    assert result.filled_qty == pytest.approx(100.0)
+    assert result.remaining_inventory == pytest.approx(0.0)

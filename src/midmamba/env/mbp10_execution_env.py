@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import gymnasium as gym
@@ -12,6 +13,9 @@ from midmamba.data.mbp10_features import ASK_PX, ASK_SZ, BID_PX, BID_SZ, add_mar
 
 
 Side = Literal["buy", "sell"]
+FillModel = Literal["conservative", "proportional", "optimistic"]
+FillModelSpec = FillModel | Literal["random"] | Sequence[FillModel]
+FILL_MODELS: tuple[FillModel, ...] = ("conservative", "proportional", "optimistic")
 
 
 @dataclass(frozen=True)
@@ -106,8 +110,33 @@ def _opposite_touch_flow(row: pd.Series, next_row: pd.Series, side: Side) -> flo
     return 0.0
 
 
-def passive_touch_fill(row: pd.Series, next_row: pd.Series, side: Side, quantity: float) -> FillResult:
+def _validate_fill_model(fill_model: str) -> FillModel:
+    if fill_model not in FILL_MODELS:
+        raise ValueError(f"fill_model must be one of {FILL_MODELS} or 'random', got {fill_model!r}")
+    return fill_model  # type: ignore[return-value]
+
+
+def resolve_fill_model(fill_model: FillModelSpec, rng: np.random.Generator) -> FillModel:
+    if isinstance(fill_model, str):
+        if fill_model == "random":
+            return str(rng.choice(FILL_MODELS))  # type: ignore[return-value]
+        return _validate_fill_model(fill_model)
+    choices = tuple(_validate_fill_model(str(mode)) for mode in fill_model)
+    if not choices:
+        raise ValueError("fill_model sequence must not be empty")
+    return str(rng.choice(choices))  # type: ignore[return-value]
+
+
+def passive_touch_fill(
+    row: pd.Series,
+    next_row: pd.Series,
+    side: Side,
+    quantity: float,
+    *,
+    fill_model: FillModel = "proportional",
+) -> FillResult:
     """Approximate a passive touch fill from visible queue depletion."""
+    fill_model = _validate_fill_model(fill_model)
     qty = max(float(quantity), 0.0)
     if qty <= 0:
         return FillResult(0.0, 0.0, 0.0, 0.0, 0)
@@ -120,8 +149,13 @@ def passive_touch_fill(row: pd.Series, next_row: pd.Series, side: Side, quantity
     if flow <= 0:
         return FillResult(0.0, qty, 0.0, 0.0, 0)
 
-    queue_share = qty / (visible_qty + qty) if visible_qty > 0 else 1.0
-    filled = min(qty, flow * queue_share)
+    if fill_model == "optimistic":
+        filled = min(qty, flow)
+    elif fill_model == "conservative":
+        filled = min(qty, max(flow - visible_qty, 0.0))
+    else:
+        queue_share = qty / (visible_qty + qty) if visible_qty > 0 else 1.0
+        filled = min(qty, flow * queue_share)
     return FillResult(
         filled_qty=float(filled),
         unfilled_qty=float(qty - filled),
@@ -152,6 +186,7 @@ class MBP10ExecutionEnv(gym.Env):
         end_index: int | None = None,
         child_fraction: float = 0.1,
         terminal_penalty_bps: float = 500.0,
+        fill_model: FillModelSpec = "proportional",
     ) -> None:
         super().__init__()
         if side not in ("buy", "sell"):
@@ -173,6 +208,7 @@ class MBP10ExecutionEnv(gym.Env):
         self.default_end_index = len(self.book) - 1 if end_index is None else int(end_index)
         self.child_fraction = float(child_fraction)
         self.terminal_penalty_bps = float(terminal_penalty_bps)
+        self.fill_model_spec = fill_model
 
         self.action_space = spaces.Discrete(3)
         self.feature_names = self._feature_names()
@@ -195,6 +231,8 @@ class MBP10ExecutionEnv(gym.Env):
         self.cumulative_shortfall = 0.0
         self.last_fill_qty = 0.0
         self.last_fill_price = 0.0
+        self.rng = np.random.default_rng()
+        self.active_fill_model = "proportional"
         self._done = False
 
     @staticmethod
@@ -227,6 +265,8 @@ class MBP10ExecutionEnv(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
         opts = options or {}
         self.side = opts.get("side", self.default_side)
         if self.side not in ("buy", "sell"):
@@ -247,6 +287,7 @@ class MBP10ExecutionEnv(gym.Env):
         self.cumulative_shortfall = 0.0
         self.last_fill_qty = 0.0
         self.last_fill_price = 0.0
+        self.active_fill_model = resolve_fill_model(opts.get("fill_model", self.fill_model_spec), self.rng)
         self._done = False
         return self._observation(), self._info()
 
@@ -307,7 +348,7 @@ class MBP10ExecutionEnv(gym.Env):
         qty = self._child_quantity()
         if qty <= 0:
             return 0.0
-        return self._apply_fill(passive_touch_fill(row, next_row, self.side, qty))
+        return self._apply_fill(passive_touch_fill(row, next_row, self.side, qty, fill_model=self.active_fill_model))
 
     def _opposite_flow_at_touch(self, row: pd.Series, next_row: pd.Series) -> float:
         return _opposite_touch_flow(row, next_row, self.side)
@@ -351,6 +392,7 @@ class MBP10ExecutionEnv(gym.Env):
             "remaining_inventory": float(self.remaining_inventory),
             "last_fill_qty": float(self.last_fill_qty),
             "last_fill_price": float(self.last_fill_price),
+            "fill_model": self.active_fill_model,
             "implementation_shortfall": float(self.cumulative_shortfall),
             "implementation_shortfall_bps": float(self.cumulative_shortfall / denom * 1e4),
         }
@@ -382,6 +424,7 @@ class MidMambaExecutionEnv(gym.Env):
         initial_inventory: float = 1_000.0,
         side: Side = "buy",
         terminal_penalty_bps: float = 500.0,
+        fill_model: FillModelSpec = "proportional",
     ) -> None:
         super().__init__()
         if execution_steps < 2:
@@ -396,6 +439,7 @@ class MidMambaExecutionEnv(gym.Env):
         self.initial_inventory = float(initial_inventory)
         self.default_side = side
         self.terminal_penalty_bps = float(terminal_penalty_bps)
+        self.fill_model_spec = fill_model
         self.n_features = int(dataloader.n_features)
 
         self.observation_space = spaces.Box(
@@ -415,6 +459,8 @@ class MidMambaExecutionEnv(gym.Env):
         self.cash = 0.0
         self.filled_qty = 0.0
         self.cumulative_shortfall = 0.0
+        self.rng = np.random.default_rng()
+        self.active_fill_model = "proportional"
         self._done = False
 
     def reset(
@@ -424,6 +470,8 @@ class MidMambaExecutionEnv(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
         opts = options or {}
         self.side = opts.get("side", self.default_side)
         if self.side not in ("buy", "sell"):
@@ -448,6 +496,7 @@ class MidMambaExecutionEnv(gym.Env):
         self.filled_qty = 0.0
         self.cumulative_shortfall = 0.0
         self.arrival_price = _row_mid(_as_row(raw_lob, 0))
+        self.active_fill_model = resolve_fill_model(opts.get("fill_model", self.fill_model_spec), self.rng)
         self._done = False
         return self._get_obs(), self._info(0.0, 0.0, 0, 0.0)
 
@@ -468,7 +517,7 @@ class MidMambaExecutionEnv(gym.Env):
         if target_qty > 0:
             if aggressiveness < 0.0 and self.current_step < self.max_steps - 1:
                 next_row = _as_row(self.current_window_raw_lob, self.current_step + 1)
-                fill = passive_touch_fill(row, next_row, self.side, target_qty)
+                fill = passive_touch_fill(row, next_row, self.side, target_qty, fill_model=self.active_fill_model)
             else:
                 max_levels = max(1, int(np.ceil(max(aggressiveness, 0.0) * 10.0)))
                 fill = walk_book(row, self.side, target_qty, max_levels=max_levels)
@@ -534,6 +583,7 @@ class MidMambaExecutionEnv(gym.Env):
             "executed_shares": float(executed_shares),
             "avg_exec_price": float(avg_exec_price),
             "levels_touched": int(levels_touched),
+            "fill_model": self.active_fill_model,
             "implementation_shortfall": float(self.cumulative_shortfall),
             "implementation_shortfall_bps": float(self.cumulative_shortfall / denom * 1e4),
             "terminal_penalty_bps": float(terminal_penalty_bps),

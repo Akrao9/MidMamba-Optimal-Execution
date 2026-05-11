@@ -58,6 +58,38 @@ def test_window_loader_reports_unknown_feature_columns() -> None:
         MBP10WindowLoader.from_book(_book(), feature_columns=["l1_imbalance", "missing_feature"])
 
 
+def test_window_loader_from_book_filters_regular_trading_hours() -> None:
+    book = _book(4)
+    idx = pd.DatetimeIndex(
+        [
+            "2025-10-01 13:29:59+00:00",
+            "2025-10-01 13:30:00+00:00",
+            "2025-10-01 20:00:00+00:00",
+            "2025-10-01 20:00:01+00:00",
+        ],
+        name="ts_recv",
+    )
+    book.index = idx
+    book["ts_event"] = idx + pd.Timedelta(microseconds=100)
+    book["ts_recv"] = idx
+
+    loader = MBP10WindowLoader.from_book(book, rth_start="09:30:00", rth_end="16:00:00")
+
+    assert loader.n_rows == 2
+    assert loader.raw_lob.iloc[0]["ts_recv"] == idx[1]
+    assert loader.raw_lob.iloc[1]["ts_recv"] == idx[2]
+
+
+def test_window_loader_from_book_requires_complete_rth_args() -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        MBP10WindowLoader.from_book(_book(), rth_start="09:30:00")
+
+
+def test_window_loader_from_book_reports_empty_rth_filter() -> None:
+    with pytest.raises(ValueError, match="after RTH filter"):
+        MBP10WindowLoader.from_book(_book(), rth_start="12:00:00", rth_end="13:00:00")
+
+
 def test_window_loader_from_dbn_file_uses_to_df_count_dataframe(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, int | None]] = []
     frame = _book()

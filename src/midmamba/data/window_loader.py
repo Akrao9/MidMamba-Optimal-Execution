@@ -6,7 +6,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from midmamba.data.mbp10_features import add_market_fields, build_feature_frame, drop_invalid_rows
+from midmamba.data.mbp10_features import add_market_fields, apply_rth_filter, build_feature_frame, drop_invalid_rows
 
 
 class MBP10WindowLoader:
@@ -40,6 +40,7 @@ class MBP10WindowLoader:
         if len(self.feature_names) != features.shape[1]:
             raise ValueError("feature_names length must match features width")
         self.n_features = int(features.shape[1])
+        self.n_rows = int(features.shape[0])
         self.rng = np.random.default_rng(seed)
 
     @classmethod
@@ -48,8 +49,20 @@ class MBP10WindowLoader:
         book: pd.DataFrame,
         *,
         feature_columns: Sequence[str] | None = None,
+        rth_start: str | None = None,
+        rth_end: str | None = None,
         seed: int | None = None,
     ) -> "MBP10WindowLoader":
+        if (rth_start is None) != (rth_end is None):
+            raise ValueError("rth_start and rth_end must be provided together")
+        if rth_start is not None and rth_end is not None:
+            book = apply_rth_filter(book, rth_start, rth_end)
+            if len(book) < 2:
+                raise ValueError(
+                    f"book contains {len(book)} rows after RTH filter "
+                    f"{rth_start}-{rth_end}; increase sample_rows or disable rth_only"
+                )
+
         market_cols = {"mid", "spread", "spread_bps"}
         prepared = add_market_fields(book) if not market_cols.issubset(book.columns) else book.copy()
         prepared = drop_invalid_rows(prepared).sort_index(kind="stable")
@@ -72,6 +85,8 @@ class MBP10WindowLoader:
         *,
         sample_rows: int | None = None,
         feature_columns: Sequence[str] | None = None,
+        rth_start: str | None = None,
+        rth_end: str | None = None,
         seed: int | None = None,
     ) -> "MBP10WindowLoader":
         import databento as db  # type: ignore
@@ -84,7 +99,13 @@ class MBP10WindowLoader:
             if sample_rows <= 0:
                 raise ValueError("sample_rows must be positive")
             df = _first_dataframe(store.to_df(count=sample_rows))
-        return cls.from_book(_event_time_frame(df), feature_columns=feature_columns, seed=seed)
+        return cls.from_book(
+            _event_time_frame(df),
+            feature_columns=feature_columns,
+            rth_start=rth_start,
+            rth_end=rth_end,
+            seed=seed,
+        )
 
     def sample_window(self, n_steps: int, *, start: int | None = None) -> tuple[np.ndarray, pd.DataFrame]:
         if n_steps < 2:

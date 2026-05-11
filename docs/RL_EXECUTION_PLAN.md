@@ -44,6 +44,7 @@ Train against implementation shortfall.
 - Rollouts store observations, actions, log probabilities, values, rewards, and done flags.
 - Use GAE for advantages.
 - Update with PPO clipped objective, value loss, and entropy regularization.
+- Initial smoke implementation: `src/midmamba/rl/ppo.py` and `scripts/train_ppo_smoke.py`.
 
 ## Phase 5: Evaluation
 
@@ -56,4 +57,4 @@ Benchmark the trained policy on unseen October 2025 days.
 
 ## Current Next Build
 
-The simulator, window loader, and simple baselines are now the foundation. The next implementation target is a small PPO smoke loop over `MidMambaExecutionEnv`, starting with synthetic or sampled real windows before scaling to full October 2025 days.
+The simulator, window loader, baselines, and PPO smoke loop are now in place. The next implementation target is running PPO on chunked RTH DBN windows, then adding fixed-cadence resampling and checkpointed multi-window training.

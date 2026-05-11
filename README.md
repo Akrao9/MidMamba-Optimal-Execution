@@ -54,6 +54,7 @@ Baseline helpers are available in `midmamba.eval`:
 | `src/midmamba/env/` | Historical execution replay environment |
 | `src/midmamba/eval/` | Execution baselines and evaluation helpers |
 | `src/midmamba/models/` | LOB spatial stem, temporal blocks, and actor-critic model |
+| `src/midmamba/rl/` | PPO rollout, GAE, and update utilities |
 | `tests/` | Lightweight unit tests for retained reusable pieces |
 
 ## Local Checks
@@ -66,6 +67,7 @@ python scripts/check_manifest.py
 python scripts/inspect_dbn.py
 python scripts/run_baseline_smoke.py --sample-rows 100000 --window-steps 1000
 python scripts/run_baseline_smoke.py --chunk-rows 100000 --window-steps 2000 --rth-only --random-start --parent-quantity 100000 --twap-slices 100
+python scripts/train_ppo_smoke.py --updates 1 --rollout-steps 32 --execution-steps 16
 python -m pytest tests -q
 ```
 

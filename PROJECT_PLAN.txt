@@ -87,6 +87,7 @@ Implemented and retained:
 - actor-critic model scaffold
 - initial MBP-10 execution environment
 - immediate execution and TWAP baseline helpers
+- PPO smoke rollout/update utilities
 - unit tests for features, model outputs, gradients, and simulator mechanics
 
 Important current files:
@@ -95,11 +96,13 @@ Important current files:
 - scripts/inspect_dbn.py
 - scripts/check_colab_env.py
 - scripts/run_baseline_smoke.py
+- scripts/train_ppo_smoke.py
 - src/midmamba/data/mbp10_features.py
 - src/midmamba/data/window_loader.py
 - src/midmamba/env/mbp10_execution_env.py
 - src/midmamba/eval/baselines.py
 - src/midmamba/models/lob_mamba.py
+- src/midmamba/rl/ppo.py
 - docs/DATABENTO_REFERENCE.md
 - docs/SIMULATOR_REFERENCES.md
 - docs/RL_EXECUTION_PLAN.md
@@ -369,6 +372,13 @@ PPO objective:
 - gradient clipping
 - minibatch updates over rollout buffers
 
+Current implementation:
+
+- src/midmamba/rl/ppo.py implements squashed-Gaussian continuous actions, GAE,
+  rollout collection, and PPO updates.
+- scripts/train_ppo_smoke.py runs a small synthetic-data PPO smoke train and can
+  optionally use sampled DBN windows.
+
 Training safety:
 
 - run tiny synthetic episodes first
@@ -465,10 +475,10 @@ Drive saving:
 Current Next Steps
 ------------------
 
-1. Add PPO rollout buffer.
-2. Add PPO training script.
-3. Add fixed-cadence resampling for 100 ms and 1 s execution windows.
-4. Add richer evaluation plots and trajectory JSON for real DBN days.
+1. Run PPO smoke against one chunked RTH DBN window.
+2. Add fixed-cadence resampling for 100 ms and 1 s execution windows.
+3. Add richer evaluation plots and trajectory JSON for real DBN days.
+4. Add checkpointed PPO training over multiple sampled windows.
 5. Add Colab notebook cells for simulator smoke, baselines, PPO smoke, and sync.
 
 

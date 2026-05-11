@@ -7,14 +7,12 @@ torchaudio
 --extra-index-url https://pypi.org/simple
 causal-conv1d>=1.4.0
 databento
-lightgbm
+gymnasium
 mamba-ssm
 matplotlib
 numpy
 pandas
 pyarrow
-scikit-learn
-seaborn
 tqdm
 torchao
 wandb

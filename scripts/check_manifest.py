@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 0 data presence check from Databento manifests."""
+"""Data presence check from Databento manifests."""
 
 from __future__ import annotations
 

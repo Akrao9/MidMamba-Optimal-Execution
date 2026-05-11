@@ -86,7 +86,7 @@ class TemporalBlock(nn.Module):
 
                 self.mixer = Mamba2(d_model=d_model, **(mamba_kwargs or {}))
             except ImportError as e:  # pragma: no cover
-                raise ImportError("Install mamba-ssm and causal-conv1d for Phase 3.") from e
+                raise ImportError("Install mamba-ssm and causal-conv1d for the Mamba backend.") from e
         else:
             self.mixer = nn.GRU(
                 input_size=d_model,
@@ -313,26 +313,19 @@ class GatedAttentionPool(nn.Module):
         return self.drop((weights * gated).sum(dim=1))
 
 
-class LOBMambaV2(nn.Module):
-    """LOBMambaV2 sequence classifier.
+class LOBMambaBackbone(nn.Module):
+    """MBP-10 sequence encoder used by the RL execution agent.
 
     Architecture:
         bid/ask-aware LOB spatial stem
         -> N x TemporalBlock(Mamba-2 or GRU + SwiGLU FFN)
-        -> gated-attention/mean/last pooling
-        -> 3-class classification head
-        -> optional regression head over the pooled representation
-
-    Multi-task usage:
-        logits = model(x)              # backward-compatible
-        logits, reg = model.forward_logits_and_reg(x)  # cls + horizon-return regression
+        -> gated-attention/mean/last pooling.
     """
 
     def __init__(
         self,
         n_features: int,
         d_model: int,
-        n_classes: int = 3,
         n_layers: int = 3,
         dropout: float = 0.1,
         pool_mode: str = "gated_attention",
@@ -341,7 +334,6 @@ class LOBMambaV2(nn.Module):
         spatial_stem: bool = True,
         mamba_kwargs: dict[str, Any] | None = None,
         mlp_expand: int = 2,
-        regression_head: bool = True,
     ) -> None:
         super().__init__()
         valid_pool_modes = ("gated_attention", "attention", "mean", "last")
@@ -350,7 +342,8 @@ class LOBMambaV2(nn.Module):
         if backend not in ("mamba", "gru"):
             raise ValueError(f"backend must be 'mamba' or 'gru', got '{backend}'")
 
-        self.architecture = "LOBMambaV2"
+        self.architecture = "LOBMambaBackbone"
+        self.d_model = int(d_model)
         self.pool_mode = pool_mode
         self.backend = backend
         self.spatial_stem_enabled = spatial_stem
@@ -384,12 +377,6 @@ class LOBMambaV2(nn.Module):
         self.attention_pool = (
             GatedAttentionPool(d_model, dropout) if pool_mode in ("gated_attention", "attention") else None
         )
-        self.head = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, n_classes),
-        )
-        self.reg_head = nn.Linear(d_model, 1) if regression_head else None
 
     def _pool(self, h: torch.Tensor) -> torch.Tensor:
         if self.pool_mode == "mean":
@@ -399,21 +386,93 @@ class LOBMambaV2(nn.Module):
         assert self.attention_pool is not None
         return self.attention_pool(h)
 
-    def _trunk(self, x: torch.Tensor) -> torch.Tensor:
+    def encode_sequence(self, x: torch.Tensor) -> torch.Tensor:
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
-        return self._pool(h)
+        return h
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self._trunk(x))
+        h = self.encode_sequence(x)
+        return self._pool(h)
 
-    def forward_logits_and_reg(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
-        pooled = self._trunk(x)
-        logits = self.head(pooled)
-        reg = self.reg_head(pooled).squeeze(-1) if self.reg_head is not None else None
-        return logits, reg
+    def feature_group_summary(self) -> dict[str, int | bool] | None:
+        if isinstance(self.stem, LOBSpatialStem):
+            return self.stem.feature_group_summary()
+        return None
 
 
-class MambaSequenceClassifier(LOBMambaV2):
-    """Backward-compatible name for existing imports."""
+class ActorCriticOutput(dict[str, torch.Tensor]):
+    """Typed dict-like output for policy/value forward passes."""
+
+
+class LOBMambaRLExecutionAgent(nn.Module):
+    """Actor-critic policy for execution episodes over MBP-10 state sequences.
+
+    The observation tensor should already include market features plus internal
+    execution context such as remaining time and remaining inventory. For a
+    discrete action setup the actor emits logits for actions like wait, market,
+    and passive limit. For a continuous action setup it emits action means and
+    learned log standard deviations for PPO-style sampling.
+    """
+
+    def __init__(
+        self,
+        n_features: int,
+        d_model: int,
+        *,
+        action_dim: int = 3,
+        action_mode: str = "discrete",
+        n_layers: int = 3,
+        dropout: float = 0.1,
+        pool_mode: str = "gated_attention",
+        backend: str = "mamba",
+        feature_names: Sequence[str] | None = None,
+        spatial_stem: bool = True,
+        mamba_kwargs: dict[str, Any] | None = None,
+        mlp_expand: int = 2,
+    ) -> None:
+        super().__init__()
+        if action_mode not in ("discrete", "continuous"):
+            raise ValueError("action_mode must be 'discrete' or 'continuous'")
+        self.action_mode = action_mode
+        self.action_dim = int(action_dim)
+        self.backbone = LOBMambaBackbone(
+            n_features=n_features,
+            d_model=d_model,
+            n_layers=n_layers,
+            dropout=dropout,
+            pool_mode=pool_mode,
+            backend=backend,
+            feature_names=feature_names,
+            spatial_stem=spatial_stem,
+            mamba_kwargs=mamba_kwargs,
+            mlp_expand=mlp_expand,
+        )
+        self.actor = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, self.action_dim),
+        )
+        self.critic = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Dropout(dropout),
+            nn.Linear(d_model, 1),
+        )
+        if action_mode == "continuous":
+            self.log_std = nn.Parameter(torch.zeros(self.action_dim))
+        else:
+            self.log_std = None
+
+    def forward(self, x: torch.Tensor) -> ActorCriticOutput:
+        pooled = self.backbone(x)
+        policy = self.actor(pooled)
+        value = self.critic(pooled).squeeze(-1)
+        out = ActorCriticOutput(value=value)
+        if self.action_mode == "continuous":
+            assert self.log_std is not None
+            out["action_mean"] = policy
+            out["action_log_std"] = self.log_std.expand_as(policy)
+        else:
+            out["policy_logits"] = policy
+        return out

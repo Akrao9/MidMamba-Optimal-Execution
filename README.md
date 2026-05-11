@@ -1,47 +1,58 @@
-# Mamba-LOB
+# MidMamba
 
-Selective state-space modeling for SPY MBP-10 order book direction prediction, with cross-regime evaluation (March 2025 vs October 2025).
+Deep reinforcement learning for trade execution on Databento MBP-10 limit order book data, using a Mamba-2 actor-critic backbone.
 
-## Quick start
+The project is now focused on execution quality, not price-direction classification. The agent learns how to execute a parent order over a fixed window while minimizing implementation shortfall versus simple baselines such as TWAP and immediate aggressive execution.
 
-Run phases **in order** using **[RUNBOOK.md](RUNBOOK.md)** (commands and expected outputs).
+## Current Scope
+
+| Area | Status |
+|------|--------|
+| Databento MBP-10 ingestion | Local utilities retained for manifest and DBN inspection |
+| Stationary LOB features | Reusable feature code in `src/midmamba/data/mbp10_features.py` |
+| Mamba backbone | Reusable spatial stem and temporal Mamba/GRU blocks in `src/midmamba/models/lob_mamba.py` |
+| RL actor-critic head | Initial `LOBMambaRLExecutionAgent` module scaffolded |
+| Simulator | Next implementation target |
+| PPO training | Next implementation target after simulator smoke tests |
+| Evaluation | TWAP, immediate execution, implementation shortfall, and trajectory plots |
+
+## Data Position
+
+Databento `mbp-10` is already Level 2 limit order book data. We do not convert it to a separate "LOB" format, and we cannot reconstruct MBO/Level 3 queue identities from MBP-10.
+
+The simulator will use MBP-10 levels directly:
+
+- market orders walk the visible top 10 levels;
+- passive orders use an estimated/proportional fill model because MBP-10 does not contain exact queue position;
+- internal agent state features, such as remaining time and remaining inventory, are appended to market features at each step.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `data/` | Raw Databento batch (`*.dbn.zst`, manifests) |
-| `configs/` | JSON configs per phase (`phase0` uses Colab doc + scripts) |
-| `src/phase1/` | Dataset pipeline (features, labels, splits) |
-| `src/common/` | Shared helpers (feature column list, QA JSON load) |
-| `src/phase3/` | LOBMambaV2 windowing + model |
-| `scripts/` | CLI entrypoints for each phase |
-| `results/` | Generated metrics, parquet, models (large files gitignored; see `.gitignore`) |
-| `notebooks/` | Optional reporting |
-| `tests/` | Unit tests (`pytest tests/`) for labels, features, Phase 1 boundaries, Phase 3 smoke backend, Phase 4 backtest, windowing, and `dataset_utils` |
-| `docs/PHASE5_CHECKLIST.md` | Writeup / blog checklist |
+| `data/` | Local Databento manifests and ignored raw `*.dbn.zst` files |
+| `docs/RL_EXECUTION_PLAN.md` | Current end-to-end project plan |
+| `docs/SIMULATOR_REFERENCES.md` | Notes from local `mbt_gym` and `nautilus_trader` references |
+| `docs/DATABENTO_REFERENCE.md` | Local Databento client reference notes |
+| `scripts/check_manifest.py` | Count expected DBN files from manifests |
+| `scripts/inspect_dbn.py` | Inspect a local DBN sample without loading a full day |
+| `scripts/check_colab_env.py` | GPU, Mamba, and DBN environment checks |
+| `src/midmamba/data/` | MBP-10 market fields and stationary feature helpers |
+| `src/midmamba/models/` | LOB spatial stem, temporal blocks, and actor-critic model |
+| `tests/` | Lightweight unit tests for retained reusable pieces |
 
-## Dependencies
+## Local Checks
 
-- **Core (local / CPU):** `requirements.txt` — databento, pandas, lightgbm, etc.
-- **Colab + GPU:** `requirements-colab.txt` — PyTorch nightly + mamba + torchao (see `COLAB_PHASE0.md`).
-- **Phase 0 only:** `requirements-phase0.txt`.
+```bash
+python scripts/check_manifest.py
+python scripts/inspect_dbn.py
+python -m pytest tests -q
+```
 
-## Phase map
+## Reference Repos
 
-| Phase | Script | Config (full / smoke) |
-|-------|--------|-------------------------|
-| 0 | `scripts/phase0_*.py` | `COLAB_PHASE0.md`, `requirements-colab.txt` |
-| 1 | `scripts/phase1_build_dataset.py` | `configs/phase1.json` / `phase1_smoke.json` → `phase1_h{H}_cell{C}.parquet` |
-| 2 | `scripts/phase2_train_lightgbm.py` | `configs/phase2.json` / `phase2_smoke.json` |
-| 3 | `scripts/phase3_train_mamba.py` | `configs/phase3.json` / `phase3_smoke.json` |
-| 4 | `scripts/phase4_backtest.py` | `configs/phase4.json` / `phase4_smoke.json` |
-| 5 | — | `docs/PHASE5_CHECKLIST.md` |
+Local sibling repositories used as implementation references:
 
-Environment notes for GPU / FP8: see `environment_check.md`.
-
-Phase 3 now trains **LOBMambaV2**: a bid/ask-aware LOB spatial stem, Mamba-2 temporal backend, and gated-attention pooling. Full training uses `backend: "mamba"` and requires `mamba-ssm`; the CPU smoke config uses `backend: "gru"` to test the same stem/pooling/checkpoint path without GPU-only packages.
-
-**Databento client source:** if you cloned [databento-python](https://github.com/databento/databento-python) next to this repo, see [docs/DATABENTO_REFERENCE.md](docs/DATABENTO_REFERENCE.md) for paths (`DBNStore`, tests, `dbnstore.py`).
-
-**Audit / caveats:** [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)
+- `../mbt_gym` for Gym-style trading environments, normalized observations/actions, reward plumbing, and inventory/cash state transitions.
+- `../nautilus_trader` for matching-core, fill-model, queue-position, liquidity consumption, and simulated exchange behavior.
+- `../databento-python` for DBN decoding and `DBNStore` behavior.

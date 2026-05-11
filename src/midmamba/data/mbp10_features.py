@@ -60,9 +60,14 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     feat["mid_log_ret_1"] = np.log(mid).diff()
     feat["spread_bps_feat"] = df["spread_bps"]
     feat["l1_imbalance"] = (df["bid_sz_00"] - df["ask_sz_00"]) / (df["bid_sz_00"] + df["ask_sz_00"] + eps)
+    feat["l1_log_size_skew"] = np.log1p(df["bid_sz_00"].clip(lower=0)) - np.log1p(df["ask_sz_00"].clip(lower=0))
     feat["depth10_imbalance"] = (
         df[BID_SZ].sum(axis=1) - df[ASK_SZ].sum(axis=1)
     ) / (df[BID_SZ].sum(axis=1) + df[ASK_SZ].sum(axis=1) + eps)
+    if all(col in df.columns for col in BID_CT + ASK_CT):
+        bid_ct_sum = df[BID_CT].fillna(0).clip(lower=0).sum(axis=1)
+        ask_ct_sum = df[ASK_CT].fillna(0).clip(lower=0).sum(axis=1)
+        feat["depth10_log_count_skew"] = np.log1p(bid_ct_sum) - np.log1p(ask_ct_sum)
 
     # Queue imbalance and MLOFI-like size flow at each level.
     for i in range(10):

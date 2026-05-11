@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run all Phase 0 checks for Colab/GPU environments."""
+"""Run Colab/GPU sanity checks for the RL execution project."""
 
 from __future__ import annotations
 
@@ -122,11 +122,11 @@ def run_dbn_inspect_check(root: Path) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Colab Phase 0 checks.")
+    parser = argparse.ArgumentParser(description="Run Colab/GPU environment checks.")
     parser.add_argument(
         "--output-json",
-        default="results/phase0_colab_check_results.json",
-        help="Path for JSON results output (default: results/phase0_colab_check_results.json)",
+        default="results/env_check_results.json",
+        help="Path for JSON results output (default: results/env_check_results.json)",
     )
     args = parser.parse_args()
 

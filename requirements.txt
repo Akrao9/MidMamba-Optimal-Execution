@@ -1,17 +1,15 @@
-# Full project (pin versions in production / Colab as needed)
 databento>=0.30.0
+gymnasium>=0.29.0
+matplotlib>=3.8.0
 numpy>=1.26.0
 pandas>=2.0.0
 pyarrow>=14.0.0
-scikit-learn>=1.3.0
-lightgbm>=4.0.0
-matplotlib>=3.8.0
-seaborn>=0.13.0
+pytest>=8.0.0
+torch>=2.2.0
 tqdm>=4.66.0
 wandb>=0.16.0
-pytest>=8.0.0
 
-# Phase 0 / 3 / optional FP8 — install PyTorch for your CUDA from pytorch.org first, then:
+# GPU backend, installed separately on Colab/Blackwell:
 # mamba-ssm
 # causal-conv1d>=1.4.0
 # torchao

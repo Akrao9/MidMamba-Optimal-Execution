@@ -6,6 +6,20 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pandas as pd
+
+
+def first_dataframe(value: object) -> pd.DataFrame:
+    if isinstance(value, pd.DataFrame):
+        return value
+    try:
+        first = next(iter(value))  # type: ignore[arg-type]
+    except StopIteration as exc:
+        raise ValueError("DBNStore.to_df returned no DataFrame chunks") from exc
+    if not isinstance(first, pd.DataFrame):
+        raise TypeError(f"DBNStore.to_df returned {type(first).__name__}, expected DataFrame")
+    return first
+
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
@@ -27,7 +41,7 @@ def main() -> int:
     print(f"inspecting_file={target}")
 
     store = db.DBNStore.from_file(str(target))
-    df = store.to_df(count=5)
+    df = first_dataframe(store.to_df(count=5))
 
     print(f"sample_row_count={len(df)}")
     print(f"column_count={len(df.columns)}")

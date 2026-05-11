@@ -8,6 +8,11 @@ import json
 from pathlib import Path
 import sys
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 from midmamba.data import MBP10WindowLoader
 from midmamba.eval import run_immediate_execution, run_twap_execution
 
@@ -30,15 +35,14 @@ def main() -> int:
     parser.add_argument("--output-json", type=Path, default=Path("results/baseline_smoke.json"))
     args = parser.parse_args()
 
-    root = Path(__file__).resolve().parents[1]
-    dbn_file = args.dbn_file or _default_dbn(root)
+    dbn_file = args.dbn_file or _default_dbn(ROOT)
     if dbn_file is None:
         print("No .dbn.zst files found under data/. Pass --dbn-file explicitly.", file=sys.stderr)
         return 1
 
     output_path = args.output_json
     if not output_path.is_absolute():
-        output_path = root / output_path
+        output_path = ROOT / output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[baseline] loading {dbn_file}")

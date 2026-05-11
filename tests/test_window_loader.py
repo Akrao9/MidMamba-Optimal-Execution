@@ -83,6 +83,33 @@ def test_window_loader_from_dbn_file_uses_to_df_count_dataframe(monkeypatch: pyt
     assert loader.raw_lob.iloc[0]["ts_recv"] == frame.index[0]
 
 
+def test_window_loader_from_dbn_file_accepts_dataframe_iterator(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, int | None]] = []
+    frame = _book()
+
+    class _FrameIterator:
+        def __iter__(self):
+            yield frame
+
+    class _Store:
+        @staticmethod
+        def from_file(path: str) -> "_Store":
+            calls.append(("from_file", None))
+            return _Store()
+
+        def to_df(self, count: int | None = None) -> _FrameIterator:
+            calls.append(("to_df", count))
+            return _FrameIterator()
+
+    monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))
+
+    loader = MBP10WindowLoader.from_dbn_file("/tmp/fake.dbn.zst", sample_rows=5, seed=1)
+
+    assert calls == [("from_file", None), ("to_df", 5)]
+    assert loader.n_features > 0
+    assert len(loader.raw_lob) == len(frame)
+
+
 def test_window_loader_from_dbn_file_validates_sample_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Store:
         @staticmethod

@@ -13,6 +13,20 @@ def print_section(title: str) -> None:
     print(f"\n=== {title} ===")
 
 
+def first_dataframe(value: object):
+    import pandas as pd  # type: ignore
+
+    if isinstance(value, pd.DataFrame):
+        return value
+    try:
+        first = next(iter(value))  # type: ignore[arg-type]
+    except StopIteration as exc:
+        raise ValueError("DBNStore.to_df returned no DataFrame chunks") from exc
+    if not isinstance(first, pd.DataFrame):
+        raise TypeError(f"DBNStore.to_df returned {type(first).__name__}, expected DataFrame")
+    return first
+
+
 def run_torch_gpu_check() -> dict:
     result: dict = {"name": "torch_gpu", "ok": False}
     try:
@@ -105,7 +119,7 @@ def run_dbn_inspect_check(root: Path) -> dict:
     target = candidates[0]
     try:
         store = db.DBNStore.from_file(str(target))
-        df = store.to_df(count=5)
+        df = first_dataframe(store.to_df(count=5))
         result["file"] = str(target)
         result["sample_row_count"] = int(len(df))
         result["column_count"] = int(len(df.columns))

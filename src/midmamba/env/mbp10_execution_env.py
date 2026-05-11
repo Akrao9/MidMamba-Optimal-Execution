@@ -26,8 +26,13 @@ class FillResult:
 def _visible_levels(row: pd.Series, side: Side) -> tuple[np.ndarray, np.ndarray]:
     price_cols = ASK_PX if side == "buy" else BID_PX
     size_cols = ASK_SZ if side == "buy" else BID_SZ
-    prices = row[price_cols].to_numpy(dtype=np.float64, copy=False)
-    sizes = row[size_cols].fillna(0.0).clip(lower=0.0).to_numpy(dtype=np.float64, copy=False)
+    prices = pd.to_numeric(row[price_cols], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    sizes = (
+        pd.to_numeric(row[size_cols], errors="coerce")
+        .fillna(0.0)
+        .clip(lower=0.0)
+        .to_numpy(dtype=np.float64, copy=False)
+    )
     valid = np.isfinite(prices) & np.isfinite(sizes) & (sizes > 0)
     return prices[valid], sizes[valid]
 

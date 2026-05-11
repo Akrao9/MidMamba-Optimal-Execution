@@ -78,12 +78,12 @@ class MBP10WindowLoader:
 
         store = db.DBNStore.from_file(str(path))
         if sample_rows is None:
-            df = store.to_df()
+            df = _first_dataframe(store.to_df())
         else:
             sample_rows = int(sample_rows)
             if sample_rows <= 0:
                 raise ValueError("sample_rows must be positive")
-            df = store.to_df(count=sample_rows)
+            df = _first_dataframe(store.to_df(count=sample_rows))
         return cls.from_book(_event_time_frame(df), feature_columns=feature_columns, seed=seed)
 
     def sample_window(self, n_steps: int, *, start: int | None = None) -> tuple[np.ndarray, pd.DataFrame]:
@@ -97,6 +97,18 @@ class MBP10WindowLoader:
             raise ValueError("window start is out of bounds")
         end = start + n_steps
         return self.features[start:end].copy(), self.raw_lob.iloc[start:end].copy()
+
+
+def _first_dataframe(value: object) -> pd.DataFrame:
+    if isinstance(value, pd.DataFrame):
+        return value
+    try:
+        first = next(iter(value))  # type: ignore[arg-type]
+    except StopIteration as exc:
+        raise ValueError("DBNStore.to_df returned no DataFrame chunks") from exc
+    if not isinstance(first, pd.DataFrame):
+        raise TypeError(f"DBNStore.to_df returned {type(first).__name__}, expected DataFrame")
+    return first
 
 
 def _event_time_frame(df: pd.DataFrame) -> pd.DataFrame:

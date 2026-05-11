@@ -22,6 +22,7 @@ results/**/_intermediate/
 results/**/datasets/*.parquet
 results/**/models/
 results/**/checkpoints/
+results/baseline_smoke*.json
 colab_logs/
 *.log
 

@@ -10,21 +10,26 @@ The project is now focused on execution quality, not price-direction classificat
 |------|--------|
 | Databento MBP-10 ingestion | Local utilities retained for manifest and DBN inspection |
 | Stationary LOB features | Reusable feature code in `src/midmamba/data/mbp10_features.py` |
+| LOB simulator | Discrete MBP-10 replay env and continuous PPO-facing env in `src/midmamba/env/mbp10_execution_env.py` |
 | Mamba backbone | Reusable spatial stem and temporal Mamba/GRU blocks in `src/midmamba/models/lob_mamba.py` |
 | RL actor-critic head | Initial `LOBMambaRLExecutionAgent` module scaffolded |
-| Simulator | Next implementation target |
-| PPO training | Next implementation target after simulator smoke tests |
+| PPO training | Next implementation target after replay/data-loader smoke tests |
 | Evaluation | TWAP, immediate execution, implementation shortfall, and trajectory plots |
 
 ## Data Position
 
 Databento `mbp-10` is already Level 2 limit order book data. We do not convert it to a separate "LOB" format, and we cannot reconstruct MBO/Level 3 queue identities from MBP-10.
 
-The simulator will use MBP-10 levels directly:
+The simulator uses MBP-10 levels directly:
 
 - market orders walk the visible top 10 levels;
 - passive orders use an estimated/proportional fill model because MBP-10 does not contain exact queue position;
 - internal agent state features, such as remaining time and remaining inventory, are appended to market features at each step.
+
+Two environment interfaces are available:
+
+- `MBP10ExecutionEnv`: low-level discrete replay environment for physics tests.
+- `MidMambaExecutionEnv`: continuous-action PPO-facing environment using a dataloader `sample_window()` contract.
 
 ## Layout
 
@@ -38,10 +43,14 @@ The simulator will use MBP-10 levels directly:
 | `scripts/inspect_dbn.py` | Inspect a local DBN sample without loading a full day |
 | `scripts/check_colab_env.py` | GPU, Mamba, and DBN environment checks |
 | `src/midmamba/data/` | MBP-10 market fields and stationary feature helpers |
+| `src/midmamba/env/` | Historical execution replay environment |
 | `src/midmamba/models/` | LOB spatial stem, temporal blocks, and actor-critic model |
 | `tests/` | Lightweight unit tests for retained reusable pieces |
 
 ## Local Checks
+
+`pyproject.toml` is the authoritative dependency list. `requirements.txt` and
+`requirements-colab.txt` are install convenience files for local and Colab runs.
 
 ```bash
 python scripts/check_manifest.py

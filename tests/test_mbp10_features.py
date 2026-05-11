@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from midmamba.data.mbp10_features import add_market_fields, build_feature_frame
+from midmamba.data.mbp10_features import (
+    add_market_fields,
+    apply_rth_filter,
+    book_integrity_report,
+    build_feature_frame,
+    drop_invalid_rows,
+)
 
 
 def _sample_mbp10_frame(n: int = 8) -> pd.DataFrame:
@@ -43,3 +49,44 @@ def test_build_feature_frame_contains_stationary_lob_features() -> None:
     }
     assert expected.issubset(features.columns)
     assert np.isfinite(features.drop(columns=["mid_log_ret_1"]).to_numpy()).all()
+
+
+def test_build_feature_frame_handles_sparse_deep_book_levels() -> None:
+    df = add_market_fields(_sample_mbp10_frame())
+    df.loc[df.index[2], ["bid_px_04", "ask_px_04", "bid_sz_04", "ask_ct_07"]] = np.nan
+
+    features = build_feature_frame(df)
+
+    assert np.isfinite(features.drop(columns=["mid_log_ret_1"]).to_numpy()).all()
+    assert features.loc[df.index[2], "bid_px_04_rel_mid"] == 0.0
+
+
+def test_apply_rth_filter_accepts_naive_utc_index() -> None:
+    df = _sample_mbp10_frame(3)
+    df.index = pd.DatetimeIndex([
+        "2025-10-01 13:29:59",
+        "2025-10-01 13:30:00",
+        "2025-10-01 20:00:01",
+    ])
+
+    filtered = apply_rth_filter(df, "09:30:00", "16:00:00")
+
+    assert len(filtered) == 1
+    assert filtered.index[0] == pd.Timestamp("2025-10-01 13:30:00")
+
+
+def test_drop_invalid_rows_and_book_integrity_report() -> None:
+    df = _sample_mbp10_frame(4)
+    df.loc[df.index[0], "bid_px_01"] = df.loc[df.index[0], "bid_px_00"] + 0.01
+    df.loc[df.index[1], "ask_px_01"] = df.loc[df.index[1], "ask_px_00"] - 0.01
+    df.loc[df.index[2], "ask_px_00"] = df.loc[df.index[2], "bid_px_00"]
+    df.loc[df.index[3], "bid_px_00"] = np.nan
+
+    report = book_integrity_report(df)
+    cleaned = drop_invalid_rows(df)
+
+    assert report["bid_monotonic_fail"] == 1
+    assert report["ask_monotonic_fail"] == 1
+    assert report["crossed_or_locked"] == 1
+    assert report["top_level_nan_rows"] == 1
+    assert len(cleaned) == 2

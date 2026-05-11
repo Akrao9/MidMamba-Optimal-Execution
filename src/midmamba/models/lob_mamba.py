@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any
+from typing import TypedDict
 
 import torch
 import torch.nn as nn
@@ -110,13 +111,6 @@ class TemporalBlock(nn.Module):
         return x
 
 
-class MambaBlock(TemporalBlock):
-    """Backward-compatible alias for the Mamba branch of TemporalBlock."""
-
-    def __init__(self, d_model: int, dropout: float = 0.1) -> None:
-        super().__init__(d_model=d_model, backend="mamba", dropout=dropout)
-
-
 class LOBSpatialStem(nn.Module):
     """Bid/ask-aware spatial feature mixer for each order book timestep.
 
@@ -135,9 +129,11 @@ class LOBSpatialStem(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
+        if feature_names is None:
+            raise ValueError("feature_names is required when spatial_stem=True")
         self.n_features = int(n_features)
         self.d_model = int(d_model)
-        self.feature_names = list(feature_names or [f"f{i}" for i in range(n_features)])
+        self.feature_names = list(feature_names)
         if len(self.feature_names) != n_features:
             raise ValueError(
                 f"feature_names length ({len(self.feature_names)}) must match n_features ({n_features})"
@@ -188,7 +184,6 @@ class LOBSpatialStem(nn.Module):
         if self.global_width == 0:
             side_dim = max(1, (2 * d_model) // 3)
             pair_dim = max(1, d_model - side_dim)
-            global_dim = 0
         else:
             side_dim = max(1, d_model // 2)
             pair_dim = max(1, d_model // 4)
@@ -372,8 +367,6 @@ class LOBMambaBackbone(nn.Module):
                 for _ in range(n_layers)
             ]
         )
-        # `final_norm` was redundant under gated attention (which has its own LN); the
-        # classifier head already normalizes the pooled representation. Removed.
         self.attention_pool = (
             GatedAttentionPool(d_model, dropout) if pool_mode in ("gated_attention", "attention") else None
         )
@@ -402,8 +395,11 @@ class LOBMambaBackbone(nn.Module):
         return None
 
 
-class ActorCriticOutput(dict[str, torch.Tensor]):
-    """Typed dict-like output for policy/value forward passes."""
+class ActorCriticOutput(TypedDict, total=False):
+    value: torch.Tensor
+    policy_logits: torch.Tensor
+    action_mean: torch.Tensor
+    action_log_std: torch.Tensor
 
 
 class LOBMambaRLExecutionAgent(nn.Module):
@@ -468,7 +464,7 @@ class LOBMambaRLExecutionAgent(nn.Module):
         pooled = self.backbone(x)
         policy = self.actor(pooled)
         value = self.critic(pooled).squeeze(-1)
-        out = ActorCriticOutput(value=value)
+        out: ActorCriticOutput = {"value": value}
         if self.action_mode == "continuous":
             assert self.log_std is not None
             out["action_mean"] = policy

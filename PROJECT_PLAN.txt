@@ -1,0 +1,468 @@
+MidMamba Project Plan
+=====================
+
+Project Goal
+------------
+
+Build a deep reinforcement learning trade execution agent for Databento MBP-10
+limit order book data. The agent uses a Mamba-2 actor-critic backbone and learns
+how to execute a parent order over a fixed window while minimizing implementation
+shortfall versus simple execution baselines.
+
+This project is no longer a supervised price-direction classification project.
+The target is execution quality: fill the requested inventory at lower cost than
+TWAP and immediate aggressive execution.
+
+
+Data Position
+-------------
+
+Databento MBP-10 is already Level 2 limit order book data.
+
+Use MBP-10 directly:
+
+- bid_px_00 through bid_px_09
+- ask_px_00 through ask_px_09
+- bid_sz_00 through bid_sz_09
+- ask_sz_00 through ask_sz_09
+- bid_ct_00 through bid_ct_09
+- ask_ct_00 through ask_ct_09
+- action, side, size, ts_event, ts_recv, instrument_id, symbol
+
+Do not convert MBP-10 into a separate "LOB" format. MBP-10 is the visible
+aggregated limit order book.
+
+Do not attempt to reconstruct MBO/Level 3 queue IDs from MBP-10. MBP aggregates
+individual orders, so exact queue position is not recoverable. Passive order
+fills must therefore be modeled with a queue approximation.
+
+
+Reference Repositories
+----------------------
+
+The project should not directly depend on the full mbt_gym or nautilus_trader
+libraries unless a later adapter proves useful. They are implementation
+references.
+
+Local reference paths:
+
+- ../mbt_gym
+- ../nautilus_trader
+- ../databento-python
+
+Use mbt_gym for ideas about:
+
+- Gym-style environment contracts
+- explicit cash, inventory, and time state
+- action and observation normalization
+- reward calculation separation
+- vectorized rollout design
+
+Use nautilus_trader for ideas about:
+
+- matching-core design
+- marketable versus passive order behavior
+- fill models
+- liquidity consumption
+- queue-position handling
+- market order fills as price/quantity fill sequences
+
+Use databento-python for:
+
+- DBNStore behavior
+- DBN decoding
+- safe sampling of .dbn.zst files
+
+
+Current Repository Status
+-------------------------
+
+Implemented and retained:
+
+- Databento manifest and DBN inspection scripts
+- MBP-10 market fields and stationary feature helpers
+- Mamba LOB spatial stem
+- Mamba/GRU temporal backbone
+- actor-critic model scaffold
+- initial MBP-10 execution environment
+- unit tests for features, model outputs, gradients, and simulator mechanics
+
+Important current files:
+
+- scripts/check_manifest.py
+- scripts/inspect_dbn.py
+- scripts/check_colab_env.py
+- src/midmamba/data/mbp10_features.py
+- src/midmamba/env/mbp10_execution_env.py
+- src/midmamba/models/lob_mamba.py
+- docs/DATABENTO_REFERENCE.md
+- docs/SIMULATOR_REFERENCES.md
+- docs/RL_EXECUTION_PLAN.md
+
+
+Phase 1: Market Physics and LOB Simulator
+-----------------------------------------
+
+Goal:
+
+Create a historical execution environment over Databento MBP-10 data.
+
+Core requirements:
+
+1. Replay historical MBP-10 rows over a fixed execution window.
+2. Track:
+   - arrival mid
+   - cash
+   - filled quantity
+   - remaining inventory
+   - remaining time
+   - current book state
+   - last fill quantity
+   - cumulative implementation shortfall
+3. Expose a Gymnasium-style contract:
+   - reset(options={...}) -> observation, info
+   - step(action) -> observation, reward, terminated, truncated, info
+4. Define a low-level discrete action space:
+   - 0 = wait
+   - 1 = market order slice
+   - 2 = passive limit order slice at the touch
+5. Define a PPO-facing continuous action space:
+   - action[0] = urgency/size in [-1, 1], mapped to [0, 1] of remaining inventory
+   - action[1] = price aggressiveness in [-1, 1]
+   - negative aggressiveness posts passively at the touch
+   - non-negative aggressiveness crosses the spread and controls how many visible MBP-10 levels can be walked
+6. Implement market order fills by walking visible MBP-10 levels:
+   - buy market order consumes ask_px/ask_sz from level 0 upward
+   - sell market order consumes bid_px/bid_sz from level 0 downward
+   - return average fill price, filled quantity, unfilled quantity, and levels touched
+7. Implement passive limit fills with a proportional queue approximation:
+   - if buying passively, post at best bid
+   - if selling passively, post at best ask
+   - estimate fill from visible queue depletion or price movement
+   - fill share = agent quantity / (visible queue + agent quantity)
+8. Define reward as negative implementation shortfall in bps.
+9. Penalize unfinished inventory at the terminal step.
+
+Current implementation:
+
+- MBP10ExecutionEnv: discrete MBP-10 replay environment for physics tests
+- MidMambaExecutionEnv: continuous-action dataloader environment for PPO rollouts
+- Both live in src/midmamba/env/mbp10_execution_env.py
+
+Remaining Phase 1 work:
+
+- Add real Databento day/episode loader
+- Add fixed-cadence resampling option, such as 100 ms or 1 s
+- Add richer passive fill modes:
+  - conservative
+  - proportional
+  - optimistic
+- Add slippage and spread diagnostics
+- Add vectorized rollout support after single-episode correctness is stable
+
+
+Phase 2: Data Pipeline and Episode Builder
+------------------------------------------
+
+Goal:
+
+Transform raw Databento MBP-10 data into replay episodes and model-ready
+stationary tensors without loading full months into RAM.
+
+Data ingestion:
+
+1. Read .dbn.zst files using databento.DBnStore.from_file.
+2. Sample safely with store.to_df(count=N), which returns an iterator when count
+   is provided.
+3. Preserve both:
+   - ts_event: exchange event time
+   - ts_recv: receive time
+4. Use event-time or receive-time stepping explicitly. Do not mix them silently.
+
+Cleaning:
+
+1. Drop invalid top-of-book rows:
+   - bid_px_00 missing
+   - ask_px_00 missing
+   - bid_sz_00 missing
+   - ask_sz_00 missing
+   - ask_px_00 <= bid_px_00
+2. Treat missing deeper levels as absent visible liquidity:
+   - missing size -> 0
+   - missing count -> 0
+   - missing relative price feature -> 0
+3. Keep book-integrity diagnostics:
+   - bid monotonic failures
+   - ask monotonic failures
+   - crossed or locked rows
+   - top-level NaNs
+
+Feature engineering:
+
+1. Relative prices:
+   - bid_px_N_rel_mid
+   - ask_px_N_rel_mid
+2. Log sizes:
+   - log1p_bid_sz_N
+   - log1p_ask_sz_N
+3. Log counts:
+   - log1p_bid_ct_N
+   - log1p_ask_ct_N
+4. Microstructure:
+   - spread_bps
+   - l1_imbalance
+   - l1_log_size_skew
+   - depth10_imbalance
+   - depth10_log_count_skew
+   - MLOFI-like level flows
+   - microprice
+   - weighted mid
+   - event timing and arrival rates
+
+Internal execution state features:
+
+Append these to every observation or sequence:
+
+- remaining_time_frac
+- remaining_inventory_frac
+- last_fill_frac
+- optional previous action
+- optional passive order state
+- optional recent fill rate
+
+Episode builder:
+
+Create utilities that produce execution episodes:
+
+- choose day
+- choose start time
+- choose end time or horizon
+- choose side: buy or sell
+- choose parent order size
+- choose child slice fraction
+- return MBP-10 replay frame plus episode metadata
+
+Memory requirements:
+
+- Stream DBN files
+- Avoid full-month materialization
+- Produce batches lazily
+- Store generated artifacts outside Git
+
+
+Phase 3: Mamba-2 Actor-Critic Architecture
+------------------------------------------
+
+Goal:
+
+Use a Mamba-2 backbone to encode recent LOB state and internal execution context,
+then output policy and value predictions for PPO.
+
+Current model file:
+
+- src/midmamba/models/lob_mamba.py
+
+Backbone:
+
+1. LOBSpatialStem:
+   - consumes MBP-10 feature names
+   - builds bid/ask side views
+   - builds pairwise level features
+   - keeps global engineered features
+2. TemporalBlock:
+   - Mamba-2 backend for GPU training
+   - GRU fallback for CPU tests
+   - SwiGLU feed-forward block
+3. Pooling:
+   - gated attention
+   - mean
+   - last
+
+Actor-critic head:
+
+1. Shared sequence encoder.
+2. Actor head:
+   - discrete mode: action logits
+   - continuous mode: action mean and learned log_std
+3. Critic head:
+   - scalar V(s)
+
+Initial discrete action mode:
+
+- wait
+- market slice
+- passive touch slice
+
+Initial continuous action mode:
+
+- percentage of remaining inventory to execute
+- aggressiveness scalar
+- negative aggressiveness: passive touch order
+- non-negative aggressiveness: marketable order, with larger values allowed to walk more visible levels
+
+Hardware target:
+
+- Colab with RTX PRO 6000 Blackwell Server Edition
+- PyTorch nightly cu128
+- mamba_ssm
+- causal-conv1d
+- BF16/FP8 experiments later, after correctness
+
+
+Phase 4: PPO Training Loop
+--------------------------
+
+Goal:
+
+Train the actor-critic agent to minimize execution shortfall.
+
+Rollout data:
+
+Collect:
+
+- observations
+- actions
+- log probabilities
+- rewards
+- value estimates
+- done flags
+- episode metadata
+- diagnostics
+
+Reward:
+
+Start with:
+
+- reward = negative step implementation shortfall in bps
+- terminal penalty for unfinished inventory
+
+Extend with:
+
+- spread crossing cost
+- realized slippage versus arrival mid
+- penalty for excessive market-order aggression
+- penalty for incomplete fills
+- optional participation-rate constraints
+
+Advantage estimation:
+
+- use Generalized Advantage Estimation
+- tune gamma and lambda for short execution episodes
+
+PPO objective:
+
+- clipped surrogate policy loss
+- value loss
+- entropy bonus
+- gradient clipping
+- minibatch updates over rollout buffers
+
+Training safety:
+
+- run tiny synthetic episodes first
+- run a single real day before full October
+- verify no NaNs in observations, logits, values, rewards, or advantages
+- log episode-level shortfall, completion rate, and action mix
+
+
+Phase 5: Evaluation and Baselines
+---------------------------------
+
+Goal:
+
+Prove whether the learned execution policy improves execution cost versus simple
+industry heuristics.
+
+Required baselines:
+
+1. Immediate aggressive execution:
+   - execute full quantity immediately by walking the visible book
+   - useful as worst-case slippage reference
+2. TWAP:
+   - split parent order evenly across the window
+   - execute each slice at fixed intervals
+3. Optional POV/VWAP-like baseline:
+   - participate based on observed volume or depth proxy
+
+Metrics:
+
+- implementation shortfall in bps
+- total filled quantity
+- completion rate
+- average fill price
+- notional traded
+- spread paid
+- slippage decomposition
+- action distribution
+- passive fill ratio
+- market order ratio
+- terminal leftover inventory
+
+Evaluation split:
+
+- Train on selected historical days
+- Validate on later held-out days
+- Test on unseen October 2025 days
+
+Plots:
+
+- execution trajectory over time
+- cumulative filled quantity
+- cumulative implementation shortfall
+- microprice and midprice
+- spread
+- top-of-book depth
+- action markers
+
+
+Colab Execution Plan
+--------------------
+
+Use Colab for large runs after local correctness.
+
+Recommended order:
+
+1. Clone or sync repo.
+2. Install requirements-colab.txt.
+3. Run scripts/check_colab_env.py.
+4. Run scripts/check_manifest.py.
+5. Run scripts/inspect_dbn.py.
+6. Run unit tests.
+7. Build a small real-data replay episode.
+8. Run immediate and TWAP baselines.
+9. Run one PPO smoke rollout.
+10. Scale to more days and larger batch sizes.
+
+Drive saving:
+
+- Save checkpoints, metrics, and plots to Drive.
+- Keep raw DBN data and generated artifacts out of Git.
+- Sync only small JSON summaries and selected figures unless a full artifact is
+  specifically needed.
+
+
+Current Next Steps
+------------------
+
+1. Add episode builder for real Databento MBP-10 days.
+2. Add immediate execution and TWAP baselines.
+3. Add evaluation report JSON for one real day.
+4. Add PPO rollout buffer.
+5. Add PPO training script.
+6. Add Colab notebook cells for simulator smoke, baselines, PPO smoke, and sync.
+
+
+Definition of Done
+------------------
+
+The project is successful when:
+
+1. The simulator replays MBP-10 episodes without NaNs or OOM issues.
+2. Market orders correctly walk visible book depth.
+3. Passive order fills are modeled transparently and can be switched between
+   conservative/proportional/optimistic modes.
+4. TWAP and immediate baselines run on unseen data.
+5. PPO trains without numerical instability.
+6. The Mamba agent is evaluated against baselines on held-out days.
+7. Results are reported as implementation shortfall in bps with clear plots and
+   diagnostics.

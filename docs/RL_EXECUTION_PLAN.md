@@ -6,11 +6,16 @@ This repo now targets a Mamba-2 actor-critic agent for execution, not supervised
 
 Build an execution environment over Databento MBP-10 snapshots.
 
-- Step through an execution window at a fixed cadence, such as 100 ms or 1 s.
-- Track cash, filled quantity, remaining inventory, remaining time, open passive order state, and current MBP-10 book state.
+- Initial implementations: `MBP10ExecutionEnv` and `MidMambaExecutionEnv` in `src/midmamba/env/mbp10_execution_env.py`.
+- Step through a historical execution window row by row.
+- Track cash, filled quantity, remaining inventory, remaining time, and current MBP-10 book state.
 - Fill market orders by walking the visible bid/ask levels.
-- Fill passive limit orders with an MBP-compatible queue estimate. MBP-10 lacks individual order IDs, so queue position must be modeled, not recovered.
-- Emit observations, rewards, done flags, and diagnostic info with a Gym-style interface.
+- Fill one-step passive limit orders with an MBP-compatible proportional queue estimate. MBP-10 lacks individual order IDs, so queue position is modeled, not recovered.
+- Emit observations, rewards, done flags, and diagnostic info with a Gymnasium-style interface.
+- Use `MBP10ExecutionEnv` for low-level discrete physics tests.
+- Use `MidMambaExecutionEnv` for PPO-facing continuous actions:
+  - action[0] maps to the percent of remaining inventory to attempt.
+  - action[1] maps to passive touch posting when negative, or spread-crossing aggressiveness when non-negative.
 
 ## Phase 2: Data Pipeline
 

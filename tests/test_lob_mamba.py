@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from midmamba.models.lob_mamba import LOBMambaBackbone, LOBMambaRLExecutionAgent, LOBSpatialStem
 
@@ -47,6 +48,17 @@ def test_lob_mamba_backbone_uses_spatial_stem() -> None:
     assert pooled.shape == (2, 16)
 
 
+def test_spatial_stem_requires_feature_names() -> None:
+    with pytest.raises(ValueError, match="feature_names is required"):
+        LOBMambaBackbone(
+            n_features=8,
+            d_model=16,
+            n_layers=1,
+            backend="gru",
+            dropout=0.0,
+        )
+
+
 def test_discrete_actor_critic_outputs_logits_and_value() -> None:
     model = LOBMambaRLExecutionAgent(
         n_features=7,
@@ -63,6 +75,27 @@ def test_discrete_actor_critic_outputs_logits_and_value() -> None:
 
     assert out["policy_logits"].shape == (4, 3)
     assert out["value"].shape == (4,)
+
+
+def test_discrete_actor_critic_backward_is_finite() -> None:
+    model = LOBMambaRLExecutionAgent(
+        n_features=7,
+        d_model=12,
+        action_dim=3,
+        action_mode="discrete",
+        n_layers=1,
+        backend="gru",
+        spatial_stem=False,
+        dropout=0.0,
+    )
+
+    out = model(torch.randn(4, 5, 7))
+    loss = out["policy_logits"].square().mean() + out["value"].square().mean()
+    loss.backward()
+
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    assert grads
+    assert all(torch.isfinite(g).all().item() for g in grads)
 
 
 def test_continuous_actor_critic_outputs_mean_std_and_value() -> None:

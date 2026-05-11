@@ -14,11 +14,13 @@ BID_SZ = level_cols("bid_sz")
 ASK_SZ = level_cols("ask_sz")
 BID_CT = level_cols("bid_ct")
 ASK_CT = level_cols("ask_ct")
-BASE_REQUIRED = ["symbol", "instrument_id", "size", "action", "side"] + BID_PX + ASK_PX + BID_SZ + ASK_SZ + BID_CT + ASK_CT
 
 
 def apply_rth_filter(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    local_idx = df.index.tz_convert("America/New_York")
+    index = pd.DatetimeIndex(df.index)
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    local_idx = index.tz_convert("America/New_York")
     mask = (local_idx.time >= pd.Timestamp(start).time()) & (local_idx.time <= pd.Timestamp(end).time())
     return df.loc[mask]
 
@@ -49,7 +51,7 @@ def book_integrity_report(df: pd.DataFrame) -> dict[str, int]:
 def drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out = out.dropna(subset=["bid_px_00", "ask_px_00", "bid_sz_00", "ask_sz_00"])
-    out = out[(out["ask_px_00"] > out["bid_px_00"])]
+    out = out[(out["ask_px_00"] > out["bid_px_00"]) & (out["bid_sz_00"] >= 0) & (out["ask_sz_00"] >= 0)]
     return out
 
 
@@ -57,30 +59,38 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     feat: dict[str, pd.Series | np.ndarray] = {}
     mid = df["mid"]
     eps = 1e-9
+    bid_sz = df[BID_SZ].fillna(0).clip(lower=0)
+    ask_sz = df[ASK_SZ].fillna(0).clip(lower=0)
+    bid_ct = df[BID_CT].fillna(0).clip(lower=0)
+    ask_ct = df[ASK_CT].fillna(0).clip(lower=0)
+    bid_px = df[BID_PX].copy()
+    ask_px = df[ASK_PX].copy()
+    bid_px_filled = bid_px.T.fillna(mid).T
+    ask_px_filled = ask_px.T.fillna(mid).T
+
     feat["mid_log_ret_1"] = np.log(mid).diff()
     feat["spread_bps_feat"] = df["spread_bps"]
-    feat["l1_imbalance"] = (df["bid_sz_00"] - df["ask_sz_00"]) / (df["bid_sz_00"] + df["ask_sz_00"] + eps)
-    feat["l1_log_size_skew"] = np.log1p(df["bid_sz_00"].clip(lower=0)) - np.log1p(df["ask_sz_00"].clip(lower=0))
+    feat["l1_imbalance"] = (bid_sz["bid_sz_00"] - ask_sz["ask_sz_00"]) / (bid_sz["bid_sz_00"] + ask_sz["ask_sz_00"] + eps)
+    feat["l1_log_size_skew"] = np.log1p(bid_sz["bid_sz_00"]) - np.log1p(ask_sz["ask_sz_00"])
     feat["depth10_imbalance"] = (
-        df[BID_SZ].sum(axis=1) - df[ASK_SZ].sum(axis=1)
-    ) / (df[BID_SZ].sum(axis=1) + df[ASK_SZ].sum(axis=1) + eps)
-    if all(col in df.columns for col in BID_CT + ASK_CT):
-        bid_ct_sum = df[BID_CT].fillna(0).clip(lower=0).sum(axis=1)
-        ask_ct_sum = df[ASK_CT].fillna(0).clip(lower=0).sum(axis=1)
-        feat["depth10_log_count_skew"] = np.log1p(bid_ct_sum) - np.log1p(ask_ct_sum)
+        bid_sz.sum(axis=1) - ask_sz.sum(axis=1)
+    ) / (bid_sz.sum(axis=1) + ask_sz.sum(axis=1) + eps)
+    bid_ct_sum = bid_ct.sum(axis=1)
+    ask_ct_sum = ask_ct.sum(axis=1)
+    feat["depth10_log_count_skew"] = np.log1p(bid_ct_sum) - np.log1p(ask_ct_sum)
 
     # Queue imbalance and MLOFI-like size flow at each level.
     for i in range(10):
-        bsz = df[f"bid_sz_{i:02d}"]
-        asz = df[f"ask_sz_{i:02d}"]
+        bsz = bid_sz[f"bid_sz_{i:02d}"]
+        asz = ask_sz[f"ask_sz_{i:02d}"]
         feat[f"depth_imbalance_l{i}"] = (bsz - asz) / (bsz + asz + eps)
         feat[f"mlofi_l{i}"] = bsz.diff().fillna(0.0) - asz.diff().fillna(0.0)
 
     # Depth-profile shape features.
-    feat["depth_slope_bid_0_4"] = np.log1p(df["bid_sz_00"].clip(lower=0)) - np.log1p(df["bid_sz_04"].clip(lower=0))
-    feat["depth_slope_ask_0_4"] = np.log1p(df["ask_sz_00"].clip(lower=0)) - np.log1p(df["ask_sz_04"].clip(lower=0))
-    bid_max_idx = df[BID_SZ].to_numpy().argmax(axis=1)
-    ask_max_idx = df[ASK_SZ].to_numpy().argmax(axis=1)
+    feat["depth_slope_bid_0_4"] = np.log1p(bid_sz["bid_sz_00"]) - np.log1p(bid_sz["bid_sz_04"])
+    feat["depth_slope_ask_0_4"] = np.log1p(ask_sz["ask_sz_00"]) - np.log1p(ask_sz["ask_sz_04"])
+    bid_max_idx = bid_sz.to_numpy().argmax(axis=1)
+    ask_max_idx = ask_sz.to_numpy().argmax(axis=1)
     feat["hump_indicator_bid"] = (bid_max_idx != 0).astype("int8")
     feat["hump_indicator_ask"] = (ask_max_idx != 0).astype("int8")
 
@@ -93,8 +103,8 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
         feat[f"arrival_rate_{w}"] = w / (dt_s.rolling(w, min_periods=1).sum() + eps)
 
     # Aggressor-side proxy from top-level queue thinning.
-    bid_d = df["bid_sz_00"].diff().fillna(0.0)
-    ask_d = df["ask_sz_00"].diff().fillna(0.0)
+    bid_d = bid_sz["bid_sz_00"].diff().fillna(0.0)
+    ask_d = ask_sz["ask_sz_00"].diff().fillna(0.0)
     is_buy_aggr = (ask_d < 0) & (bid_d >= 0)
     is_sell_aggr = (bid_d < 0) & (ask_d >= 0)
     sign = np.where(is_buy_aggr, 1.0, np.where(is_sell_aggr, -1.0, 0.0))
@@ -115,36 +125,38 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     feat["trade_intensity_200"] = trade_mask.rolling(200, min_periods=1).mean()
 
     for col in BID_SZ + ASK_SZ:
-        feat[f"log1p_{col}"] = np.log1p(df[col].clip(lower=0))
+        source = bid_sz[col] if col in BID_SZ else ask_sz[col]
+        feat[f"log1p_{col}"] = np.log1p(source)
 
     for col in BID_CT + ASK_CT:
-        if col in df.columns:
-            feat[f"log1p_{col}"] = np.log1p(df[col].fillna(0).clip(lower=0))
+        source = bid_ct[col] if col in BID_CT else ask_ct[col]
+        feat[f"log1p_{col}"] = np.log1p(source)
 
     for i in range(10):
         bct_col = f"bid_ct_{i:02d}"
         act_col = f"ask_ct_{i:02d}"
-        if bct_col in df.columns and act_col in df.columns:
-            bct = df[bct_col].fillna(0)
-            act = df[act_col].fillna(0)
-            feat[f"count_imbalance_l{i}"] = (bct - act) / (bct + act + eps)
-            feat[f"avg_order_size_bid_l{i}"] = df[f"bid_sz_{i:02d}"] / (bct + eps)
-            feat[f"avg_order_size_ask_l{i}"] = df[f"ask_sz_{i:02d}"] / (act + eps)
+        bsz_col = f"bid_sz_{i:02d}"
+        asz_col = f"ask_sz_{i:02d}"
+        bct = bid_ct[bct_col]
+        act = ask_ct[act_col]
+        feat[f"count_imbalance_l{i}"] = (bct - act) / (bct + act + eps)
+        feat[f"avg_order_size_bid_l{i}"] = bid_sz[bsz_col] / (bct + eps)
+        feat[f"avg_order_size_ask_l{i}"] = ask_sz[asz_col] / (act + eps)
 
     feat["micro_price"] = (
-        df["ask_px_00"] * df["bid_sz_00"] + df["bid_px_00"] * df["ask_sz_00"]
-    ) / (df["bid_sz_00"] + df["ask_sz_00"] + eps)
+        ask_px_filled["ask_px_00"] * bid_sz["bid_sz_00"] + bid_px_filled["bid_px_00"] * ask_sz["ask_sz_00"]
+    ) / (bid_sz["bid_sz_00"] + ask_sz["ask_sz_00"] + eps)
     feat["micro_price_rel_mid"] = (feat["micro_price"] / mid) - 1.0
-    weighted_depth_notional = (df[BID_PX].to_numpy() * df[BID_SZ].to_numpy()).sum(axis=1) + (
-        df[ASK_PX].to_numpy() * df[ASK_SZ].to_numpy()
+    weighted_depth_notional = (bid_px_filled.to_numpy() * bid_sz.to_numpy()).sum(axis=1) + (
+        ask_px_filled.to_numpy() * ask_sz.to_numpy()
     ).sum(axis=1)
-    weighted_depth_size = df[BID_SZ + ASK_SZ].sum(axis=1) + eps
+    weighted_depth_size = bid_sz.sum(axis=1) + ask_sz.sum(axis=1) + eps
     feat["weighted_mid"] = weighted_depth_notional / weighted_depth_size
     feat["weighted_mid_rel_mid"] = (feat["weighted_mid"] / mid) - 1.0
 
     for col in BID_PX:
-        feat[f"{col}_rel_mid"] = (df[col] / mid) - 1.0
+        feat[f"{col}_rel_mid"] = ((bid_px[col] / mid) - 1.0).fillna(0.0)
     for col in ASK_PX:
-        feat[f"{col}_rel_mid"] = (df[col] / mid) - 1.0
+        feat[f"{col}_rel_mid"] = ((ask_px[col] / mid) - 1.0).fillna(0.0)
 
     return pd.DataFrame(feat, index=df.index)

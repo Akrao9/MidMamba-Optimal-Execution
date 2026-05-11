@@ -49,13 +49,17 @@ Differences for this project:
 
 ## First Simulator Contract
 
-The first implementation should expose a small, testable contract:
+The first implementation exposes a small, testable contract:
 
-- `reset(day, start_time, horizon, side, quantity) -> observation`
-- `step(action) -> observation, reward, done, info`
-- `action=0`: wait
-- `action=1`: execute a market slice
-- `action=2`: post a passive limit slice at the touch
+- `reset(options={...}) -> observation, info`
+- `step(action) -> observation, reward, terminated, truncated, info`
+- `MBP10ExecutionEnv` discrete actions:
+  - `action=0`: wait
+  - `action=1`: execute a market slice
+  - `action=2`: post a passive limit slice at the touch
+- `MidMambaExecutionEnv` continuous actions:
+  - `action[0]`: urgency/size in `[-1, 1]`, mapped to `[0, 1]` of remaining inventory
+  - `action[1]`: aggressiveness in `[-1, 1]`; negative posts passively, non-negative crosses the spread
 
 The simulator should track:
 

@@ -6,7 +6,13 @@ from typing import Callable, Sequence
 import numpy as np
 import pandas as pd
 
-from midmamba.data.mbp10_features import add_market_fields, apply_rth_filter, build_feature_frame, drop_invalid_rows
+from midmamba.data.mbp10_features import (
+    add_market_fields,
+    apply_rth_filter,
+    build_feature_frame,
+    drop_invalid_rows,
+    resample_book,
+)
 
 
 class MBP10WindowLoader:
@@ -16,6 +22,7 @@ class MBP10WindowLoader:
 
     - ``n_features``
     - ``sample_window(n_steps) -> (features, raw_lob)``
+    - ``sample_window_arrays(n_steps) -> (features, bid_px, ask_px, bid_sz, ask_sz, mid)``
     """
 
     def __init__(
@@ -43,12 +50,33 @@ class MBP10WindowLoader:
         self.n_rows = int(features.shape[0])
         self.rng = np.random.default_rng(seed)
 
+        # Detect session boundaries (gaps > 2h in timestamp index)
+        self._session_ends = np.array([], dtype=np.int64)
+        if isinstance(self.raw_lob.index, pd.DatetimeIndex):
+            diffs = self.raw_lob.index[1:] - self.raw_lob.index[:-1]
+            gap_mask = diffs > pd.Timedelta(hours=2)
+            # session_ends[i] = last row index before each gap
+            self._session_ends = np.where(gap_mask)[0]
+
+        # Pre-extract book arrays to speed up environment resets
+        from midmamba.env.mbp10_execution_env import _extract_book_arrays
+        self._bid_px, self._ask_px, self._bid_sz, self._ask_sz, self._mid = _extract_book_arrays(self.raw_lob)
+
+    def _crosses_session_boundary(self, start: int, n_steps: int) -> bool:
+        """Return True if window [start, start+n_steps) spans an overnight gap."""
+        if len(self._session_ends) == 0:
+            return False
+        lo = np.searchsorted(self._session_ends, start, side="left")
+        hi = np.searchsorted(self._session_ends, start + n_steps - 2, side="right")
+        return lo < hi
+
     @classmethod
     def from_book(
         cls,
         book: pd.DataFrame,
         *,
         feature_columns: Sequence[str] | None = None,
+        resample_freq: str | None = None,
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -66,6 +94,10 @@ class MBP10WindowLoader:
         market_cols = {"mid", "spread", "spread_bps"}
         prepared = add_market_fields(book) if not market_cols.issubset(book.columns) else book.copy()
         prepared = drop_invalid_rows(prepared).sort_index(kind="stable")
+
+        if resample_freq is not None:
+            prepared = resample_book(prepared, resample_freq)
+
         if len(prepared) < 2:
             raise ValueError("book must contain at least two valid MBP-10 rows")
 
@@ -85,6 +117,7 @@ class MBP10WindowLoader:
         *,
         sample_rows: int | None = None,
         feature_columns: Sequence[str] | None = None,
+        resample_freq: str | None = None,
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -102,6 +135,7 @@ class MBP10WindowLoader:
         return cls.from_book(
             _event_time_frame(df),
             feature_columns=feature_columns,
+            resample_freq=resample_freq,
             rth_start=rth_start,
             rth_end=rth_end,
             seed=seed,
@@ -116,6 +150,7 @@ class MBP10WindowLoader:
         min_rows: int = 2,
         max_chunks: int | None = None,
         feature_columns: Sequence[str] | None = None,
+        resample_freq: str | None = None,
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -127,6 +162,7 @@ class MBP10WindowLoader:
             min_rows=min_rows,
             max_chunks=max_chunks,
             feature_columns=feature_columns,
+            resample_freq=resample_freq,
             rth_start=rth_start,
             rth_end=rth_end,
             seed=seed,
@@ -142,6 +178,7 @@ class MBP10WindowLoader:
         min_rows: int = 2,
         max_chunks: int | None = None,
         feature_columns: Sequence[str] | None = None,
+        resample_freq: str | None = None,
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -160,13 +197,15 @@ class MBP10WindowLoader:
 
         import databento as db  # type: ignore
 
-        chunks: list[pd.DataFrame] = []
+        processed_parts: list[pd.DataFrame] = []
         decoded_rows = 0
         kept_rows = 0
         chunk_index = 0
+        hit_limit = False
 
         for file_index, path in enumerate(paths, start=1):
             store = db.DBNStore.from_file(str(path))
+            file_chunks: list[pd.DataFrame] = []
             for df in store.to_df(count=int(chunk_rows)):
                 chunk_index += 1
                 framed = _event_time_frame(df)
@@ -174,24 +213,39 @@ class MBP10WindowLoader:
                 if rth_start is not None and rth_end is not None:
                     framed = apply_rth_filter(framed, rth_start, rth_end)
                 if len(framed) > 0:
-                    chunks.append(framed)
-                    kept_rows += int(len(framed))
+                    file_chunks.append(framed)
                 if progress_callback is not None:
+                    file_kept = sum(len(c) for c in file_chunks)
                     progress_callback(
                         {
                             "file_index": file_index,
                             "chunk_index": chunk_index,
                             "decoded_rows": decoded_rows,
-                            "kept_rows": kept_rows,
+                            "kept_rows": kept_rows + file_kept,
                         }
                     )
-                if kept_rows >= min_rows:
-                    break
                 if max_chunks is not None and chunk_index >= max_chunks:
+                    hit_limit = True
                     break
-            if kept_rows >= min_rows:
-                break
-            if max_chunks is not None and chunk_index >= max_chunks:
+
+            if file_chunks:
+                file_book = pd.concat(file_chunks, axis=0).sort_index(kind="stable")
+                del file_chunks
+
+                market_cols = {"mid", "spread", "spread_bps"}
+                if not market_cols.issubset(file_book.columns):
+                    file_book = add_market_fields(file_book)
+                file_book = drop_invalid_rows(file_book).sort_index(kind="stable")
+
+                if resample_freq is not None and len(file_book) > 0:
+                    file_book = resample_book(file_book, resample_freq)
+
+                if len(file_book) > 0:
+                    processed_parts.append(file_book)
+                    kept_rows += int(len(file_book))
+                del file_book
+
+            if hit_limit:
                 break
 
         if kept_rows < min_rows:
@@ -200,8 +254,15 @@ class MBP10WindowLoader:
                 "Increase --max-chunks/--chunk-rows, disable --rth-only, or reduce --window-steps."
             )
 
-        book = pd.concat(chunks, axis=0).sort_index(kind="stable")
-        return cls.from_book(book, feature_columns=feature_columns, seed=seed)
+        book = pd.concat(processed_parts, axis=0).sort_index(kind="stable")
+        return cls.from_book(
+            book,
+            feature_columns=feature_columns,
+            resample_freq=None,
+            rth_start=None,
+            rth_end=None,
+            seed=seed,
+        )
 
     def sample_window(self, n_steps: int, *, start: int | None = None) -> tuple[np.ndarray, pd.DataFrame]:
         if n_steps < 2:
@@ -209,11 +270,46 @@ class MBP10WindowLoader:
         if n_steps > len(self.features):
             raise ValueError(f"n_steps={n_steps} exceeds available rows={len(self.features)}")
         if start is None:
-            start = int(self.rng.integers(0, len(self.features) - n_steps + 1))
+            max_start = len(self.features) - n_steps
+            for _ in range(1000):
+                candidate = int(self.rng.integers(0, max_start + 1))
+                if not self._crosses_session_boundary(candidate, n_steps):
+                    start = candidate
+                    break
+            else:
+                start = candidate  # fallback after 1000 attempts
         if start < 0 or start + n_steps > len(self.features):
             raise ValueError("window start is out of bounds")
         end = start + n_steps
         return self.features[start:end].copy(), self.raw_lob.iloc[start:end].copy()
+
+    def sample_window_arrays(
+        self, n_steps: int, *, start: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if n_steps < 2:
+            raise ValueError("n_steps must be at least 2")
+        if n_steps > len(self.features):
+            raise ValueError(f"n_steps={n_steps} exceeds available rows={len(self.features)}")
+        if start is None:
+            max_start = len(self.features) - n_steps
+            for _ in range(1000):
+                candidate = int(self.rng.integers(0, max_start + 1))
+                if not self._crosses_session_boundary(candidate, n_steps):
+                    start = candidate
+                    break
+            else:
+                start = candidate  # fallback after 1000 attempts
+        if start < 0 or start + n_steps > len(self.features):
+            raise ValueError("window start is out of bounds")
+        end = start + n_steps
+        return (
+            self.features[start:end].copy(),
+            self._bid_px[start:end].copy(),
+            self._ask_px[start:end].copy(),
+            self._bid_sz[start:end].copy(),
+            self._ask_sz[start:end].copy(),
+            self._mid[start:end].copy(),
+        )
 
 
 def _first_dataframe(value: object) -> pd.DataFrame:

@@ -455,8 +455,25 @@ class LOBMambaRLExecutionAgent(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model, 1),
         )
+        # Orthogonal init with small actor gain keeps initial actions near zero
+        # so the policy doesn't dump 50% of inventory per step before training.
+        # Standard PPO practice (Andrychowicz et al. 2021).
+        nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
+        nn.init.zeros_(self.actor[-1].bias)
+        nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
+        nn.init.zeros_(self.critic[-1].bias)
         if action_mode == "continuous":
-            self.log_std = nn.Parameter(torch.zeros(self.action_dim))
+            # log(0.3) ≈ -1.2: std=0.3 gives reasonable exploration for tanh
+            # bounded actions. Initialized to 0 (std=1) the squashed policy is
+            # effectively uniform on [-1,1] and cannot learn (entropy floor).
+            self.log_std = nn.Parameter(torch.full((self.action_dim,), -1.2))
+            # Bias the size action negative so the initial policy is
+            # conservative (~5% of inventory per step), not 50%. Convention
+            # for the execution env: action[0] is size, mapped via
+            # (action[0]+1)/2 to a fraction of initial inventory.
+            with torch.no_grad():
+                if self.action_dim >= 1:
+                    self.actor[-1].bias[0] = -1.5
         else:
             self.log_std = None
 

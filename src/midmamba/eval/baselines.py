@@ -6,9 +6,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from midmamba.data.mbp10_features import add_market_fields, drop_invalid_rows
-from midmamba.env import MBP10ExecutionEnv, walk_book
-from midmamba.env.mbp10_execution_env import Side
+from midmamba.data.mbp10_features import add_market_fields, build_feature_frame, drop_invalid_rows
+from midmamba.env import MBP10ExecutionEnv, MidMambaExecutionEnv
+from midmamba.env.mbp10_execution_env import Side, _extract_book_arrays
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class BaselineResult:
     remaining_inventory: float
     implementation_shortfall: float
     implementation_shortfall_bps: float
+    slippage_bps: float
     cash: float
     terminal_penalty_bps: float
 
@@ -32,6 +33,7 @@ class BaselineResult:
             "remaining_inventory": self.remaining_inventory,
             "implementation_shortfall": self.implementation_shortfall,
             "implementation_shortfall_bps": self.implementation_shortfall_bps,
+            "slippage_bps": self.slippage_bps,
             "cash": self.cash,
             "terminal_penalty_bps": self.terminal_penalty_bps,
         }
@@ -127,6 +129,36 @@ def almgren_chriss_schedule(
     return child_sizes * (parent_quantity / total)
 
 
+class _FixedWindowLoader:
+    """Minimal dataloader that always returns rows starting at index 0.
+
+    This satisfies the ``MidMambaExecutionEnv`` dataloader contract without the
+    random window sampling of ``MBP10WindowLoader``, giving deterministic
+    baseline evaluation.
+    """
+
+    def __init__(self, prepared: pd.DataFrame) -> None:
+        feature_frame = build_feature_frame(prepared)
+        feature_frame = feature_frame.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        self.features = feature_frame.to_numpy(dtype=np.float32, copy=True)
+        self.n_features = self.features.shape[1]
+        self._bid_px, self._ask_px, self._bid_sz, self._ask_sz, self._mid = (
+            _extract_book_arrays(prepared)
+        )
+
+    def sample_window_arrays(
+        self, n_steps: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        return (
+            self.features[:n_steps].copy(),
+            self._bid_px[:n_steps].copy(),
+            self._ask_px[:n_steps].copy(),
+            self._bid_sz[:n_steps].copy(),
+            self._ask_sz[:n_steps].copy(),
+            self._mid[:n_steps].copy(),
+        )
+
+
 def run_almgren_chriss_execution(
     book: pd.DataFrame,
     *,
@@ -138,6 +170,7 @@ def run_almgren_chriss_execution(
     temporary_impact: float = 1.0,
     terminal_penalty_bps: float = 500.0,
 ) -> BaselineResult:
+    """Run Almgren-Chriss schedule through MidMambaExecutionEnv for consistent accounting."""
     schedule = almgren_chriss_schedule(
         parent_quantity,
         n_slices,
@@ -145,72 +178,46 @@ def run_almgren_chriss_execution(
         volatility=volatility,
         temporary_impact=temporary_impact,
     )
-    return _run_market_schedule(
-        "almgren_chriss",
-        book,
-        schedule=schedule,
-        side=side,
-        parent_quantity=parent_quantity,
-        terminal_penalty_bps=terminal_penalty_bps,
-    )
 
-
-def _run_market_schedule(
-    name: str,
-    book: pd.DataFrame,
-    *,
-    schedule: np.ndarray,
-    side: Side,
-    parent_quantity: float,
-    terminal_penalty_bps: float,
-) -> BaselineResult:
-    if side not in ("buy", "sell"):
-        raise ValueError("side must be 'buy' or 'sell'")
     prepared = add_market_fields(book) if "mid" not in book.columns or "spread" not in book.columns else book.copy()
     prepared = drop_invalid_rows(prepared).sort_index(kind="stable").reset_index(drop=True)
     if len(prepared) < 2:
         raise ValueError("book must contain at least two valid MBP-10 rows")
-    if len(schedule) <= 0:
-        raise ValueError("schedule must not be empty")
 
-    arrival_mid = float(prepared.iloc[0]["mid"])
-    parent_quantity = float(parent_quantity)
-    filled_qty = 0.0
-    cash = 0.0
-    cumulative_shortfall = 0.0
-    steps = min(len(schedule), len(prepared) - 1)
+    execution_steps = min(n_slices, len(prepared))
+    execution_steps = max(execution_steps, 2)
 
-    for row_idx, child_qty in enumerate(schedule[:steps]):
-        remaining = max(parent_quantity - filled_qty, 0.0)
-        target_qty = min(float(child_qty), remaining)
-        if target_qty <= 0:
-            continue
-        fill = walk_book(prepared.iloc[row_idx], side, target_qty)
-        if fill.filled_qty <= 0:
-            continue
-        filled_qty += fill.filled_qty
-        if side == "buy":
-            cash -= fill.notional
-            cumulative_shortfall += (fill.avg_price - arrival_mid) * fill.filled_qty
-        else:
-            cash += fill.notional
-            cumulative_shortfall += (arrival_mid - fill.avg_price) * fill.filled_qty
-
-    remaining_inventory = max(parent_quantity - filled_qty, 0.0)
-    denom = max(arrival_mid * parent_quantity, 1e-9)
-    terminal_penalty = terminal_penalty_bps * (remaining_inventory / parent_quantity) if remaining_inventory > 0 else 0.0
-    implementation_shortfall_bps = cumulative_shortfall / denom * 1e4
-    return BaselineResult(
-        name=name,
-        total_reward=float(-implementation_shortfall_bps - terminal_penalty),
-        steps=int(steps),
-        filled_qty=float(filled_qty),
-        remaining_inventory=float(remaining_inventory),
-        implementation_shortfall=float(cumulative_shortfall),
-        implementation_shortfall_bps=float(implementation_shortfall_bps),
-        cash=float(cash),
-        terminal_penalty_bps=float(terminal_penalty),
+    loader = _FixedWindowLoader(prepared)
+    env = MidMambaExecutionEnv(
+        loader,
+        execution_steps=execution_steps,
+        initial_inventory=parent_quantity,
+        side=side,
+        terminal_penalty_bps=terminal_penalty_bps,
     )
+    env.reset()
+
+    total_reward = 0.0
+    steps = 0
+    info: dict[str, Any] = {}
+
+    slices = schedule[:execution_steps]
+    for i, child_qty in enumerate(slices):
+        if i == len(slices) - 1:
+            size_action = 1.0  # request full remaining on last slice
+        else:
+            # Env maps action[0] → rate = (action[0]+1)/max_steps, target = rate * initial_inv
+            # To request child_qty: action[0] = child_qty * max_steps / parent_quantity - 1
+            size_action = float(np.clip(child_qty * execution_steps / parent_quantity - 1.0, -1.0, 1.0))
+        action = np.array([size_action, 1.0], dtype=np.float32)
+
+        _, reward, terminated, truncated, info = env.step(action)
+        total_reward += float(reward)
+        steps += 1
+        if terminated or truncated:
+            break
+
+    return _result("almgren_chriss", total_reward, steps, info)
 
 
 def _result(name: str, total_reward: float, steps: int, info: dict[str, Any]) -> BaselineResult:
@@ -219,9 +226,10 @@ def _result(name: str, total_reward: float, steps: int, info: dict[str, Any]) ->
         total_reward=float(total_reward),
         steps=int(steps),
         filled_qty=float(info["filled_qty"]),
-        remaining_inventory=float(info["remaining_inventory"]),
+        remaining_inventory=float(info.get("remaining_inventory", info.get("inventory", 0.0))),
         implementation_shortfall=float(info["implementation_shortfall"]),
         implementation_shortfall_bps=float(info["implementation_shortfall_bps"]),
+        slippage_bps=float(info.get("slippage_bps", 0.0)),
         cash=float(info["cash"]),
         terminal_penalty_bps=float(info.get("terminal_penalty_bps", 0.0)),
     )

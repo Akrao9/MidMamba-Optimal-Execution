@@ -85,6 +85,20 @@ def test_window_loader_from_book_requires_complete_rth_args() -> None:
         MBP10WindowLoader.from_book(_book(), rth_start="09:30:00")
 
 
+def test_window_loader_resamples_book() -> None:
+    # 6 rows at 100ms: 0, 100, 200, 300, 400, 500
+    book = _book(6)
+
+    # Resample to 200ms: buckets [0,200), [200,400), [400,600) -> 3 bars
+    loader = MBP10WindowLoader.from_book(book, resample_freq="200ms")
+
+    assert loader.n_rows == 3
+    # ts_recv holds the last original timestamp in each 200ms bucket
+    assert loader.raw_lob.iloc[0]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.100+00:00")
+    assert loader.raw_lob.iloc[1]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.300+00:00")
+    assert loader.raw_lob.iloc[2]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.500+00:00")
+
+
 def test_window_loader_from_book_reports_empty_rth_filter() -> None:
     with pytest.raises(ValueError, match="after RTH filter"):
         MBP10WindowLoader.from_book(_book(), rth_start="12:00:00", rth_end="13:00:00")
@@ -235,6 +249,54 @@ def test_window_loader_from_dbn_file_chunks_reports_insufficient_rows(
 
     with pytest.raises(ValueError, match="only 2 rows available"):
         MBP10WindowLoader.from_dbn_file_chunks("/tmp/fake.dbn.zst", chunk_rows=2, min_rows=3)
+
+
+def test_window_loader_from_dbn_files_chunks_resamples_per_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When resample_freq is set, each file is resampled independently before concat."""
+    # File A: 6 rows at 100ms cadence within RTH
+    frame_a = _book(6)
+    idx_a = pd.date_range("2025-10-01 13:30:00", periods=6, freq="100ms", tz="UTC", name="ts_recv")
+    frame_a.index = idx_a
+    frame_a["ts_event"] = idx_a
+    frame_a["ts_recv"] = idx_a
+
+    # File B: 6 rows at 100ms cadence within RTH (different day)
+    frame_b = _book(6)
+    idx_b = pd.date_range("2025-10-02 13:30:00", periods=6, freq="100ms", tz="UTC", name="ts_recv")
+    frame_b.index = idx_b
+    frame_b["ts_event"] = idx_b
+    frame_b["ts_recv"] = idx_b
+
+    opened: list[str] = []
+
+    class _Store:
+        def __init__(self, frame: pd.DataFrame) -> None:
+            self.frame = frame
+
+        @staticmethod
+        def from_file(path: str) -> "_Store":
+            opened.append(path)
+            return _Store(frame_a if path.endswith("a.dbn.zst") else frame_b)
+
+        def to_df(self, count: int):
+            yield self.frame
+
+    monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))
+
+    loader = MBP10WindowLoader.from_dbn_files_chunks(
+        ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"],
+        chunk_rows=100,
+        min_rows=6,
+        resample_freq="200ms",
+        rth_start="09:30:00",
+        rth_end="16:00:00",
+    )
+
+    assert opened == ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"]
+    # 6 rows at 100ms -> 200ms resample gives 3 per file = 6 total
+    assert loader.n_rows == 6
 
 
 def test_window_loader_from_dbn_file_validates_sample_rows(monkeypatch: pytest.MonkeyPatch) -> None:

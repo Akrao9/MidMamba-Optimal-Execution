@@ -19,6 +19,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from midmamba.data import MBP10WindowLoader
+from midmamba.data.mbp10_features import synthetic_book
 from midmamba.env import MidMambaExecutionEnv
 from midmamba.eval import run_almgren_chriss_execution, run_immediate_execution, run_twap_execution
 from midmamba.models import LOBMambaRLExecutionAgent
@@ -44,10 +45,17 @@ def _load_checkpoint(path: Path, *, device: torch.device) -> tuple[LOBMambaRLExe
 
 
 def _load_window(args: argparse.Namespace) -> tuple[MBP10WindowLoader, np.ndarray, object, int]:
+    if args.dbn_file is None and args.dbn_glob is None:
+        print("[eval] using synthetic MBP-10 book")
+        loader = MBP10WindowLoader.from_book(synthetic_book(5000, seed=args.seed), seed=args.seed)
+        features, raw_lob = loader.sample_window(args.window_steps, start=args.start)
+        return loader, features, raw_lob, args.start
+
     dbn_paths = [args.dbn_file] if args.dbn_file is not None else sorted(ROOT.glob(args.dbn_glob))
     if not dbn_paths:
         raise FileNotFoundError(f"no DBN files matched {args.dbn_glob!r}")
     kwargs = {
+        "resample_freq": args.resample_freq,
         "rth_start": args.rth_start if args.rth_only else None,
         "rth_end": args.rth_end if args.rth_only else None,
         "seed": args.seed,
@@ -98,16 +106,19 @@ def _evaluate_policy(
     shortfalls: list[float] = []
     filled: list[float] = []
     remaining: list[float] = []
+    env = MidMambaExecutionEnv(
+        loader,
+        execution_steps=execution_steps,
+        initial_inventory=parent_quantity,
+        side=side,  # type: ignore[arg-type]
+        fill_model=fill_model,  # type: ignore[arg-type]
+    )
     for _ in range(episodes):
-        env = MidMambaExecutionEnv(
-            loader,
-            execution_steps=execution_steps,
-            initial_inventory=parent_quantity,
-            side=side,  # type: ignore[arg-type]
-            fill_model=fill_model,  # type: ignore[arg-type]
-        )
         obs, _ = env.reset()
-        obs_window: deque[np.ndarray] = deque([obs.astype(np.float32)] * seq_len, maxlen=seq_len)
+        zero_obs = np.zeros_like(obs, dtype=np.float32)
+        obs_window: deque[np.ndarray] = deque(
+            [zero_obs] * (seq_len - 1) + [obs.astype(np.float32)], maxlen=seq_len
+        )
         total_reward = 0.0
         info = {}
         while True:
@@ -135,7 +146,7 @@ def _evaluate_policy(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument("--dbn-file", type=Path)
     source.add_argument("--dbn-glob")
     parser.add_argument("--sample-rows", type=int, default=100_000)
@@ -146,6 +157,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rth-start", default="09:30:00")
     parser.add_argument("--rth-end", default="16:00:00")
     parser.add_argument("--window-steps", type=int, default=2_000)
+    parser.add_argument("--resample-freq", default=None, help="Optional fixed-cadence resampling freq, e.g. '100ms' or '1s'.")
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--random-start", action="store_true")
     parser.add_argument("--execution-steps", type=int, default=60)
@@ -166,7 +178,91 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=Path("results/october_eval.json"))
+    parser.add_argument("--plot", action="store_true", help="Generate execution trajectory plots.")
+    parser.add_argument("--plot-path", type=Path, default=Path("results/eval_trajectory.png"))
     return parser.parse_args()
+
+
+def _record_policy_trajectory(
+    agent: LOBMambaRLExecutionAgent,
+    env: MidMambaExecutionEnv,
+    seq_len: int,
+    device: torch.device,
+) -> list[dict]:
+    obs, info = env.reset()
+    zero_obs = np.zeros_like(obs, dtype=np.float32)
+    obs_window: deque[np.ndarray] = deque(
+        [zero_obs] * (seq_len - 1) + [obs.astype(np.float32)], maxlen=seq_len
+    )
+    trajectory = [info]
+    while True:
+        obs_seq = torch.as_tensor(np.stack(obs_window)[None, :, :], dtype=torch.float32, device=device)
+        with torch.no_grad():
+            action, _, _ = sample_squashed_normal(agent, obs_seq, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action.squeeze(0).cpu().numpy())
+        obs_window.append(obs.astype(np.float32))
+        trajectory.append(info)
+        if terminated or truncated:
+            break
+    return trajectory
+
+
+def _record_twap_trajectory(raw_lob: pd.DataFrame, side: str, parent_quantity: float, n_slices: int) -> list[dict]:
+    from midmamba.env import MBP10ExecutionEnv
+    env = MBP10ExecutionEnv(
+        raw_lob,
+        side=side,  # type: ignore[arg-type]
+        parent_quantity=parent_quantity,
+        child_fraction=1.0 / float(n_slices),
+        end_index=len(raw_lob) - 1,
+    )
+    obs, info = env.reset()
+    trajectory = [info]
+    while True:
+        obs, reward, terminated, truncated, info = env.step(1)
+        trajectory.append(info)
+        if terminated or truncated:
+            break
+    return trajectory
+
+
+def _plot_trajectories(trajectories: dict[str, list[dict]], path: Path):
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    
+    for name, traj in trajectories.items():
+        steps = [t["step"] if "step" in t else t["row"] for t in traj]
+        inventory = [t["inventory"] if "inventory" in t else t["remaining_inventory"] for t in traj]
+        shortfall = [t["implementation_shortfall_bps"] for t in traj]
+        
+        axes[0].plot(steps, inventory, label=name)
+        axes[1].plot(steps, shortfall, label=name)
+        
+    # Plot mid price on the third axis (from the first trajectory's data)
+    first_name = list(trajectories.keys())[0]
+    first_traj = trajectories[first_name]
+    steps = [t["step"] if "step" in t else t["row"] for t in first_traj]
+    mids = [t["mid_now"] for t in first_traj]
+    axes[2].plot(steps, mids, label="Mid Price", color="black", linestyle="--")
+    
+    axes[0].set_ylabel("Inventory")
+    axes[0].set_title("Execution Inventory Trajectory")
+    axes[0].legend()
+    axes[0].grid(True)
+    
+    axes[1].set_ylabel("IS (bps)")
+    axes[1].set_title("Cumulative Implementation Shortfall")
+    axes[1].legend()
+    axes[1].grid(True)
+    
+    axes[2].set_ylabel("Price")
+    axes[2].set_title("Market Mid Price")
+    axes[2].set_xlabel("Step")
+    axes[2].grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(path)
+    print(f"[eval] saved plot to {path}")
 
 
 def main() -> int:
@@ -220,6 +316,24 @@ def main() -> int:
             device=device,
         )
         report["checkpoint_config"] = train_config
+
+    if args.plot:
+        trajectories = {
+            "TWAP": _record_twap_trajectory(
+                raw_lob, side=args.side, parent_quantity=args.parent_quantity, n_slices=args.twap_slices
+            )
+        }
+        if args.checkpoint_path is not None:
+            env = MidMambaExecutionEnv(
+                loader,
+                execution_steps=args.execution_steps,
+                initial_inventory=args.parent_quantity,
+                side=args.side,  # type: ignore[arg-type]
+                fill_model=args.fill_model,  # type: ignore[arg-type]
+            )
+            trajectories["Policy"] = _record_policy_trajectory(agent, env, args.seq_len, device)
+        
+        _plot_trajectories(trajectories, args.plot_path)
 
     output_path.write_text(json.dumps(report, indent=2, default=str))
     print(json.dumps({k: report[k] for k in ("baselines", "policy") if k in report}, indent=2))

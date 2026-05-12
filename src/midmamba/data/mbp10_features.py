@@ -55,6 +55,22 @@ def drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def resample_book(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """Resample an MBP-10 DataFrame to a fixed frequency using last-value sampling.
+
+    For each fixed-frequency bucket, takes the last observed book state.
+    Gaps are forward-filled so every bar carries a valid LOB snapshot.
+    Handles duplicate timestamps (common in raw tick data) naturally.
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index, utc=True)
+
+    return df.resample(freq).last().ffill().dropna(how="all")
+
+
 def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     feat: dict[str, pd.Series | np.ndarray] = {}
     mid = df["mid"]
@@ -65,8 +81,9 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     ask_ct = df[ASK_CT].fillna(0).clip(lower=0)
     bid_px = df[BID_PX].copy()
     ask_px = df[ASK_PX].copy()
-    bid_px_filled = bid_px.T.fillna(mid).T
-    ask_px_filled = ask_px.T.fillna(mid).T
+    mid_arr = mid.to_numpy()[:, None]
+    bid_px_filled = bid_px.fillna(pd.DataFrame(np.broadcast_to(mid_arr, bid_px.shape), index=bid_px.index, columns=bid_px.columns))
+    ask_px_filled = ask_px.fillna(pd.DataFrame(np.broadcast_to(mid_arr, ask_px.shape), index=ask_px.index, columns=ask_px.columns))
 
     feat["mid_log_ret_1"] = np.log(mid).diff()
     feat["spread_bps_feat"] = df["spread_bps"]
@@ -160,3 +177,28 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
         feat[f"{col}_rel_mid"] = ((ask_px[col] / mid) - 1.0).fillna(0.0)
 
     return pd.DataFrame(feat, index=df.index)
+
+
+def synthetic_book(n_rows: int, *, seed: int = 1) -> pd.DataFrame:
+    """Generate a synthetic MBP-10 book for testing."""
+    if n_rows < 2:
+        raise ValueError("n_rows must be at least 2")
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2025-10-01 13:30:00", periods=n_rows, freq="100ms", tz="UTC", name="ts_recv")
+    mid = 100.0 + np.cumsum(rng.normal(0.0, 0.002, size=n_rows))
+    spread = np.full(n_rows, 0.01)
+    data: dict[str, object] = {
+        "ts_event": idx,
+        "ts_recv": idx,
+    }
+    for level in range(10):
+        lv = f"{level:02d}"
+        offset = spread / 2.0 + 0.01 * level
+        data[f"bid_px_{lv}"] = mid - offset
+        data[f"ask_px_{lv}"] = mid + offset
+        base_depth = 800.0 + 100.0 * level
+        data[f"bid_sz_{lv}"] = np.maximum(10.0, base_depth + rng.normal(0.0, 80.0, size=n_rows))
+        data[f"ask_sz_{lv}"] = np.maximum(10.0, base_depth + rng.normal(0.0, 80.0, size=n_rows))
+        data[f"bid_ct_{lv}"] = np.maximum(1, np.rint(data[f"bid_sz_{lv}"] / 100.0)).astype(np.int32)
+        data[f"ask_ct_{lv}"] = np.maximum(1, np.rint(data[f"ask_sz_{lv}"] / 100.0)).astype(np.int32)
+    return pd.DataFrame(data, index=idx)

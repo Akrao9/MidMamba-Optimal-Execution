@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -28,6 +29,7 @@ from midmamba.eval import (
     run_immediate_execution,
     run_policy_evaluation,
     run_twap_execution,
+    twap_effective_slices,
 )
 
 _CHECKPOINT_TRUST_ERROR = (
@@ -55,6 +57,23 @@ def _sb3_config_path(checkpoint: Path, explicit: Path | None) -> Path | None:
     return default_run_config_path(checkpoint)
 
 
+def _resolve_vecnormalize_path(checkpoint: Path, args: argparse.Namespace, *, warn: bool = True) -> Path | None:
+    vecnorm: Path | None = None
+    if args.vecnorm_path is not None:
+        vecnorm = args.vecnorm_path if args.vecnorm_path.is_absolute() else ROOT / args.vecnorm_path
+    if vecnorm is not None and not vecnorm.is_file():
+        if warn:
+            print(
+                f"[eval] warning: --vecnorm-path={vecnorm} does not exist; "
+                "falling back to sibling or no VecNormalize stats.",
+                flush=True,
+            )
+        vecnorm = None
+    if vecnorm is None:
+        vecnorm = default_vecnormalize_path(checkpoint)
+    return vecnorm
+
+
 def _require_trusted_checkpoint(checkpoint: Path, *, trust_checkpoint: bool) -> None:
     if not checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
@@ -76,6 +95,11 @@ def _load_sb3(
     from midmamba.rl import load_eval_vec_env
 
     cfg_path = _sb3_config_path(checkpoint, args.sb3_config)
+    if cfg_path is not None:
+        print(
+            f"[eval] loading run config {cfg_path}; verify it belongs to the checkpoint artifact set.",
+            flush=True,
+        )
     cfg = json.loads(cfg_path.read_text()) if cfg_path is not None else {}
     seq_len = int(cfg.get("seq_len", args.seq_len))
     gamma = float(cfg.get("gamma", 0.995))
@@ -89,18 +113,7 @@ def _load_sb3(
         "maker_rebate_bps": float(cfg.get("maker_rebate_bps", cfg.get("MAKER_REBATE_BPS", 0.0))),
         "terminal_penalty_bps": float(cfg.get("terminal_penalty_bps", cfg.get("TERMINAL_PENALTY_BPS", 100.0))),
     }
-    vecnorm: Path | None = None
-    if args.vecnorm_path is not None:
-        vecnorm = args.vecnorm_path if args.vecnorm_path.is_absolute() else ROOT / args.vecnorm_path
-    if vecnorm is not None and not vecnorm.is_file():
-        print(
-            f"[eval] warning: --vecnorm-path={vecnorm} does not exist; "
-            "falling back to sibling or no VecNormalize stats.",
-            flush=True,
-        )
-        vecnorm = None
-    if vecnorm is None:
-        vecnorm = default_vecnormalize_path(checkpoint)
+    vecnorm = _resolve_vecnormalize_path(checkpoint, args)
 
     if norm_obs and vecnorm is None:
         print(
@@ -274,12 +287,13 @@ def _record_policy_trajectory_sb3(model: object, vec_env: object) -> list[dict]:
 
 def _record_twap_trajectory(raw_lob: pd.DataFrame, side: str, parent_quantity: float, n_slices: int) -> list[dict]:
     from midmamba.env import MBP10ExecutionEnv
+    effective_slices = twap_effective_slices(raw_lob, n_slices)
     env = MBP10ExecutionEnv(
         raw_lob,
         side=side,  # type: ignore[arg-type]
         parent_quantity=parent_quantity,
-        child_fraction=1.0 / float(n_slices),
-        end_index=len(raw_lob) - 1,
+        child_fraction=1.0 / float(effective_slices),
+        end_index=effective_slices,
     )
     obs, info = env.reset()
     trajectory = [info]
@@ -289,6 +303,38 @@ def _record_twap_trajectory(raw_lob: pd.DataFrame, side: str, parent_quantity: f
         if terminated or truncated:
             break
     return trajectory
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _artifact_entry(path: Path | None) -> dict[str, object] | None:
+    if path is None:
+        return None
+    return {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "sha256": _sha256_file(path),
+    }
+
+
+def _sb3_artifact_manifest(checkpoint: Path, args: argparse.Namespace) -> dict[str, object]:
+    cfg_path = _sb3_config_path(checkpoint, args.sb3_config)
+    vecnorm_path = _resolve_vecnormalize_path(checkpoint, args, warn=False)
+    return {
+        "checkpoint": _artifact_entry(checkpoint),
+        "vecnormalize": _artifact_entry(vecnorm_path),
+        "run_config": _artifact_entry(cfg_path),
+        "integrity_note": (
+            "Hashes identify the files evaluated but do not prove the JSON config "
+            "was produced with the checkpoint; keep model, VecNormalize, and config together."
+        ),
+    }
 
 
 def _plot_trajectories(trajectories: dict[str, list[dict]], path: Path):
@@ -374,6 +420,7 @@ def main() -> int:
         model, vec_eval, train_config = _load_sb3(ckpt, loader, device=sb3_device, args=args)
         report["policy"] = _evaluate_policy_sb3(model, vec_eval, episodes=args.policy_episodes)
         report["checkpoint_config"] = train_config
+        report["checkpoint_artifacts"] = _sb3_artifact_manifest(ckpt, args)
 
     if args.plot:
         trajectories = {

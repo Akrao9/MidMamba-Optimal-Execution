@@ -87,6 +87,15 @@ def test_almgren_chriss_execution_rebuilds_schedule_for_short_window() -> None:
     assert result.remaining_inventory == pytest.approx(0.0)
 
 
+def test_almgren_chriss_one_slice_stays_one_step() -> None:
+    result = run_almgren_chriss_execution(_book(3), parent_quantity=100.0, n_slices=1)
+
+    assert result.name == "almgren_chriss"
+    assert result.steps == 1
+    assert result.filled_qty == pytest.approx(100.0)
+    assert result.remaining_inventory == pytest.approx(0.0)
+
+
 def test_almgren_chriss_accepts_sampled_range_index_with_timestamp_columns() -> None:
     book = _book(6)
     book = book.assign(ts_event=book.index, ts_recv=book.index).reset_index(drop=True)

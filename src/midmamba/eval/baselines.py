@@ -77,9 +77,7 @@ def run_twap_execution(
     """
     if n_slices <= 0:
         raise ValueError("n_slices must be positive")
-    if len(book) < 2:
-        raise ValueError("book must contain at least two rows")
-    effective_slices = min(int(n_slices), len(book) - 1)
+    effective_slices = twap_effective_slices(book, n_slices)
     env = MBP10ExecutionEnv(
         book,
         side=side,
@@ -99,6 +97,15 @@ def run_twap_execution(
         if terminated or truncated:
             break
     return _result("twap", total_reward, steps, info)
+
+
+def twap_effective_slices(book: pd.DataFrame, n_slices: int) -> int:
+    """Return executable TWAP slices after capping to the available replay rows."""
+    if n_slices <= 0:
+        raise ValueError("n_slices must be positive")
+    if len(book) < 2:
+        raise ValueError("book must contain at least two rows")
+    return min(int(n_slices), len(book) - 1)
 
 
 def almgren_chriss_schedule(
@@ -199,8 +206,20 @@ def run_almgren_chriss_execution(
     if len(prepared) < 2:
         raise ValueError("book must contain at least two valid MBP-10 rows")
 
+    if n_slices == 1:
+        env = MBP10ExecutionEnv(
+            prepared,
+            side=side,
+            parent_quantity=parent_quantity,
+            child_fraction=1.0,
+            end_index=1,
+            terminal_penalty_bps=terminal_penalty_bps,
+        )
+        env.reset()
+        _, reward, _, _, info = env.step(1)
+        return _result("almgren_chriss", reward, 1, info)
+
     execution_steps = min(n_slices, len(prepared))
-    execution_steps = max(execution_steps, 2)
     schedule = almgren_chriss_schedule(
         parent_quantity,
         execution_steps,

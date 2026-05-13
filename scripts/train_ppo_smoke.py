@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -157,6 +158,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--target-kl", type=float, default=None, help="Optional SB3 target_kl early stop.")
     parser.add_argument("--norm-reward", action="store_true", help="Enable VecNormalize reward normalization.")
+    parser.add_argument("--use-numba", action="store_true", help="Use optional Numba kernels for simulator physics.")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--num-envs", type=int, default=1, help="Number of parallel environments.")
     parser.add_argument("--no-subproc", action="store_true", help="Use DummyVecEnv (required for debugger).")
@@ -173,6 +175,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    os.environ["MIDMAMBA_USE_NUMBA"] = "1" if args.use_numba else "0"
     device = _sb3_device_string(args.device, backend=args.backend)
     torch.manual_seed(args.seed)
     if device == "cuda" and torch.cuda.is_available():

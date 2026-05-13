@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -44,6 +45,7 @@ def main() -> int:
     parser.add_argument("--rth-start", default="09:30:00", help="RTH start time in America/New_York when --rth-only is set.")
     parser.add_argument("--rth-end", default="16:00:00", help="RTH end time in America/New_York when --rth-only is set.")
     parser.add_argument("--side", choices=["buy", "sell"], default="buy")
+    parser.add_argument("--use-numba", action="store_true", help="Use optional Numba kernels for simulator physics.")
     parser.add_argument("--parent-quantity", type=float, default=10_000.0)
     parser.add_argument("--twap-slices", type=int, default=20)
     parser.add_argument("--ac-slices", type=int, default=None, help="Almgren-Chriss slices. Defaults to --twap-slices.")
@@ -53,6 +55,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=Path("results/baseline_smoke.json"))
     args = parser.parse_args()
+    os.environ["MIDMAMBA_USE_NUMBA"] = "1" if args.use_numba else "0"
 
     dbn_file = args.dbn_file or _default_dbn(ROOT)
     if dbn_file is None:

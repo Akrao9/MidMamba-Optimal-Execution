@@ -90,14 +90,14 @@ def test_window_loader_resamples_book() -> None:
     # 6 rows at 100ms: 0, 100, 200, 300, 400, 500
     book = _book(6)
 
-    # Resample to 200ms: buckets [0,200), [200,400), [400,600) -> 3 bars
+    # Causal right-labeled 200ms grid: no row can include updates after its timestamp.
     loader = MBP10WindowLoader.from_book(book, resample_freq="200ms")
 
-    assert loader.n_rows == 3
-    # ts_recv holds the last original timestamp in each 200ms bucket
-    assert loader.raw_lob.iloc[0]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.100+00:00")
-    assert loader.raw_lob.iloc[1]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.300+00:00")
-    assert loader.raw_lob.iloc[2]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.500+00:00")
+    assert loader.n_rows == 4
+    assert loader.raw_lob.iloc[0]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00+00:00")
+    assert loader.raw_lob.iloc[1]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.200+00:00")
+    assert loader.raw_lob.iloc[2]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.400+00:00")
+    assert loader.raw_lob.iloc[3]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.500+00:00")
 
 
 def test_window_loader_exposes_precomputed_passive_flows() -> None:
@@ -354,8 +354,8 @@ def test_window_loader_from_dbn_files_chunks_resamples_per_file(
     )
 
     assert opened == ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"]
-    # 6 rows at 100ms -> 200ms resample gives 3 per file = 6 total
-    assert loader.n_rows == 6
+    # Causal right-labeled 200ms resample gives 4 per file = 8 total.
+    assert loader.n_rows == 8
 
 
 def test_window_loader_from_dbn_file_validates_sample_rows(monkeypatch: pytest.MonkeyPatch) -> None:

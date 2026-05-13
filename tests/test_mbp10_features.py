@@ -51,6 +51,10 @@ def test_build_feature_frame_contains_stationary_lob_features() -> None:
     }
     assert expected.issubset(features.columns)
     assert np.isfinite(features.drop(columns=["mid_log_ret_1"]).to_numpy()).all()
+    assert "micro_price" not in features.columns
+    assert "weighted_mid" not in features.columns
+    assert "micro_price_rel_mid" in features.columns
+    assert "weighted_mid_rel_mid" in features.columns
 
 
 def test_build_feature_frame_handles_sparse_deep_book_levels() -> None:
@@ -61,6 +65,19 @@ def test_build_feature_frame_handles_sparse_deep_book_levels() -> None:
 
     assert np.isfinite(features.drop(columns=["mid_log_ret_1"]).to_numpy()).all()
     assert features.loc[df.index[2], "bid_px_04_rel_mid"] == 0.0
+
+
+def test_build_feature_frame_is_past_and_present_only() -> None:
+    df = add_market_fields(_sample_mbp10_frame(8))
+    changed_future = df.copy()
+    for col in ("bid_px_00", "ask_px_00", "bid_sz_00", "ask_sz_00"):
+        changed_future.loc[changed_future.index[5:], col] *= 10.0
+    changed_future = add_market_fields(changed_future)
+
+    features = build_feature_frame(df).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    changed = build_feature_frame(changed_future).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    pd.testing.assert_frame_equal(features.iloc[:5], changed.iloc[:5])
 
 
 def test_apply_rth_filter_accepts_naive_utc_index() -> None:
@@ -93,6 +110,26 @@ def test_resample_book_pandas_backend_forward_fills_snapshot_grid() -> None:
     assert len(out) == 6
     assert out.index[3] == pd.Timestamp("2025-10-01 13:30:03+00:00")
     assert out.iloc[3]["bid_sz_00"] == out.iloc[2]["bid_sz_00"]
+
+
+def test_resample_book_is_right_labeled_and_causal() -> None:
+    df = add_market_fields(_sample_mbp10_frame(3))
+    df.index = pd.DatetimeIndex(
+        [
+            "2025-10-01 13:30:00.100+00:00",
+            "2025-10-01 13:30:00.199+00:00",
+            "2025-10-01 13:30:00.200+00:00",
+        ],
+        name="ts_recv",
+    )
+    df["ts_recv"] = df.index
+    df.loc[df.index[1], "bid_sz_00"] = 999_999.0
+
+    out = resample_book(df, "100ms", backend="pandas")
+
+    assert out.index[0] == pd.Timestamp("2025-10-01 13:30:00.100+00:00")
+    assert out.iloc[0]["bid_sz_00"] != 999_999.0
+    assert out.loc[pd.Timestamp("2025-10-01 13:30:00.200+00:00"), "bid_sz_00"] == 102.0
 
 
 def test_resample_book_reports_unknown_backend() -> None:

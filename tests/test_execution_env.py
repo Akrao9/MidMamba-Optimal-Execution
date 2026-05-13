@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from midmamba.env import MBP10ExecutionEnv, MidMambaExecutionEnv, passive_touch_fill, walk_book
+from midmamba.env import mbp10_execution_env as env_mod
 
 
 def _book(n: int = 4) -> pd.DataFrame:
@@ -92,6 +93,36 @@ def test_passive_fill_modes_bracket_proportional_fill() -> None:
     assert conservative.filled_qty == pytest.approx(0.0)
     assert proportional.filled_qty == pytest.approx(25.0)
     assert optimistic.filled_qty == pytest.approx(50.0)
+
+
+def test_numba_kernels_match_numpy_fill_physics(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("numba", reason="numba speed extra required")
+    book = _book(3)
+    book.loc[book.index[1], "bid_sz_00"] = 50.0
+    bid_px, ask_px, bid_sz, ask_sz, _mid = env_mod._extract_book_arrays(book)
+
+    monkeypatch.setenv("MIDMAMBA_USE_NUMBA", "0")
+    np_walk = env_mod._walk_book_np(ask_px[0], ask_sz[0], 125.0, 2)
+    np_buy_flow, np_sell_flow = env_mod._passive_touch_flows_np(bid_px, bid_sz, ask_px, ask_sz)
+    np_passive = env_mod._passive_touch_fill_from_flow_np(100.0, 100.0, 50.0, 100.0, "proportional")
+
+    monkeypatch.setenv("MIDMAMBA_USE_NUMBA", "1")
+    nb_walk = env_mod._walk_book_np(ask_px[0], ask_sz[0], 125.0, 2)
+    nb_buy_flow, nb_sell_flow = env_mod._passive_touch_flows_np(bid_px, bid_sz, ask_px, ask_sz)
+    nb_passive = env_mod._passive_touch_fill_from_flow_np(100.0, 100.0, 50.0, 100.0, "proportional")
+
+    assert nb_walk.filled_qty == pytest.approx(np_walk.filled_qty)
+    assert nb_walk.unfilled_qty == pytest.approx(np_walk.unfilled_qty)
+    assert nb_walk.notional == pytest.approx(np_walk.notional)
+    assert nb_walk.avg_price == pytest.approx(np_walk.avg_price)
+    assert nb_walk.levels_touched == np_walk.levels_touched
+    assert nb_buy_flow.tolist() == pytest.approx(np_buy_flow.tolist())
+    assert nb_sell_flow.tolist() == pytest.approx(np_sell_flow.tolist())
+    assert nb_passive.filled_qty == pytest.approx(np_passive.filled_qty)
+    assert nb_passive.unfilled_qty == pytest.approx(np_passive.unfilled_qty)
+    assert nb_passive.notional == pytest.approx(np_passive.notional)
+    assert nb_passive.avg_price == pytest.approx(np_passive.avg_price)
+    assert nb_passive.levels_touched == np_passive.levels_touched
 
 
 def test_midmamba_execution_env_randomizes_fill_model_by_episode() -> None:

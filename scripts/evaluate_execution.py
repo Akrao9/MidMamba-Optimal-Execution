@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -246,6 +247,7 @@ def parse_args() -> argparse.Namespace:
         default="proportional",
     )
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--use-numba", action="store_true", help="Use optional Numba kernels for simulator physics.")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=Path("results/october_eval.json"))
     parser.add_argument("--plot", action="store_true", help="Generate execution trajectory plots.")
@@ -327,6 +329,7 @@ def _plot_trajectories(trajectories: dict[str, list[dict]], path: Path):
 
 def main() -> int:
     args = parse_args()
+    os.environ["MIDMAMBA_USE_NUMBA"] = "1" if args.use_numba else "0"
     sb3_device = _sb3_device_string(args.device)
     device = torch.device(sb3_device)
 

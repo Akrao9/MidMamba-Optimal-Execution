@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -17,6 +18,10 @@ FillModelSpec = FillModel | Literal["random"] | Sequence[FillModel]
 FILL_MODELS: tuple[FillModel, ...] = ("conservative", "proportional", "optimistic")
 
 _N_LEVELS = 10
+_FILL_MODEL_IDS: dict[FillModel, int] = {"conservative": 0, "proportional": 1, "optimistic": 2}
+_NUMBA_TRUTHY = {"1", "true", "yes", "on", "auto"}
+_NUMBA_KERNELS: Any | None = None
+_NUMBA_IMPORT_ATTEMPTED = False
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,25 @@ class FillResult:
     notional: float
     avg_price: float
     levels_touched: int
+
+
+def _use_numba_kernels() -> bool:
+    return os.environ.get("MIDMAMBA_USE_NUMBA", "0").strip().lower() in _NUMBA_TRUTHY
+
+
+def _numba_kernels() -> Any | None:
+    global _NUMBA_IMPORT_ATTEMPTED, _NUMBA_KERNELS
+    if not _use_numba_kernels():
+        return None
+    if not _NUMBA_IMPORT_ATTEMPTED:
+        _NUMBA_IMPORT_ATTEMPTED = True
+        try:
+            from midmamba.env import numba_kernels
+        except Exception:
+            _NUMBA_KERNELS = None
+        else:
+            _NUMBA_KERNELS = numba_kernels
+    return _NUMBA_KERNELS
 
 
 def _extract_book_arrays(
@@ -50,6 +74,22 @@ def _walk_book_np(
     prices: np.ndarray, sizes: np.ndarray, quantity: float, max_levels: int | None = None
 ) -> FillResult:
     """Fill a marketable order from pre-extracted 1-D price/size arrays (one row)."""
+    kernels = _numba_kernels()
+    if kernels is not None:
+        filled, remaining, notional, avg_price, levels_touched = kernels.walk_book_numba(
+            np.asarray(prices, dtype=np.float64),
+            np.asarray(sizes, dtype=np.float64),
+            float(quantity),
+            -1 if max_levels is None else int(max_levels),
+        )
+        return FillResult(
+            float(filled),
+            float(remaining),
+            float(notional),
+            float(avg_price),
+            int(levels_touched),
+        )
+
     remaining = max(float(quantity), 0.0)
     if remaining <= 0:
         return FillResult(0.0, 0.0, 0.0, 0.0, 0)
@@ -115,6 +155,23 @@ def _passive_touch_fill_from_flow_np(
     quantity: float,
     fill_model: FillModel,
 ) -> FillResult:
+    kernels = _numba_kernels()
+    if kernels is not None:
+        filled, unfilled, notional, avg_price, levels_touched = kernels.passive_touch_fill_from_flow_numba(
+            float(price),
+            float(visible_qty),
+            float(flow),
+            float(quantity),
+            _FILL_MODEL_IDS[fill_model],
+        )
+        return FillResult(
+            float(filled),
+            float(unfilled),
+            float(notional),
+            float(avg_price),
+            int(levels_touched),
+        )
+
     qty = max(float(quantity), 0.0)
     if qty <= 0:
         return FillResult(0.0, 0.0, 0.0, 0.0, 0)
@@ -148,6 +205,15 @@ def _passive_touch_flows_np(
     ask_sz: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Precompute top-of-book passive buy/sell queue-depletion flow per row."""
+    kernels = _numba_kernels()
+    if kernels is not None:
+        return kernels.passive_touch_flows_numba(
+            np.asarray(bid_px, dtype=np.float64),
+            np.asarray(bid_sz, dtype=np.float64),
+            np.asarray(ask_px, dtype=np.float64),
+            np.asarray(ask_sz, dtype=np.float64),
+        )
+
     n = int(len(bid_px))
     buy_flow = np.zeros(n, dtype=np.float64)
     sell_flow = np.zeros(n, dtype=np.float64)

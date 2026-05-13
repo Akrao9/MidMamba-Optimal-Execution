@@ -64,11 +64,11 @@ def drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def resample_book(df: pd.DataFrame, freq: str, *, backend: SnapshotBackend = "pandas") -> pd.DataFrame:
-    """Resample an MBP-10 DataFrame to a fixed frequency using last-value sampling.
+    """Resample an MBP-10 DataFrame to a causal fixed-frequency snapshot grid.
 
-    For each fixed-frequency bucket, takes the last observed book state.
-    Gaps are forward-filled so every bar carries a valid LOB snapshot.
-    Handles duplicate timestamps (common in raw tick data) naturally.
+    Each output timestamp is the *decision time* and contains only information
+    observed at or before that timestamp. Gaps are forward-filled so every bar
+    carries a valid LOB snapshot. Handles duplicate timestamps naturally.
     """
     if backend == "pykx":
         return resample_book_pykx(df, freq)
@@ -80,7 +80,7 @@ def resample_book(df: pd.DataFrame, freq: str, *, backend: SnapshotBackend = "pa
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index, utc=True)
 
-    return df.resample(freq).last().ffill().dropna(how="all")
+    return df.resample(freq, label="right", closed="right").last().ffill().dropna(how="all")
 
 
 def resample_book_pykx(df: pd.DataFrame, freq: str) -> pd.DataFrame:
@@ -104,22 +104,23 @@ def resample_book_pykx(df: pd.DataFrame, freq: str) -> pd.DataFrame:
     out_index_name = df.index.name
     work = df.copy()
     index = pd.DatetimeIndex(pd.to_datetime(work.index, utc=True))
-    ns_col = "midmamba_ts_recv_ns"
-    work[ns_col] = index.asi8.astype(np.int64)
+    bucket_col = "midmamba_bucket_ns"
+    ts_ns = index.asi8.astype(np.int64)
+    work[bucket_col] = ((ts_ns + freq_ns - 1) // freq_ns) * freq_ns
     q_table = kx.toq(work.reset_index(drop=True))
     kx.q["midmamba_quote_data"] = q_table
 
-    data_cols = [str(col) for col in work.columns if str(col) != ns_col]
+    data_cols = [str(col) for col in work.columns if str(col) != bucket_col]
     select_expr = ", ".join(f"{col}:last {col}" for col in data_cols)
     query = (
-        f"select {select_expr} by {ns_col}:{freq_ns} xbar {ns_col} "
+        f"select {select_expr} by {bucket_col} "
         "from midmamba_quote_data"
     )
     bars = kx.q(query).pd()
     if bars.empty:
         return bars
 
-    bucket_ns = pd.to_numeric(bars.pop(ns_col)).astype(np.int64)
+    bucket_ns = pd.to_numeric(bars.pop(bucket_col)).astype(np.int64)
     bars.index = pd.DatetimeIndex(pd.to_datetime(bucket_ns, utc=True), name=out_index_name)
     bars = bars.sort_index(kind="stable")
     full_index = pd.date_range(bars.index[0], bars.index[-1], freq=freq, tz="UTC", name=out_index_name)
@@ -185,6 +186,8 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     signed_trade_proxy = sign * np.maximum(np.abs(ask_d), np.abs(bid_d))
     signed_trade_proxy = pd.Series(signed_trade_proxy, index=df.index)
     feat["trade_aggressor_sign"] = sign
+    top_depth = bid_sz["bid_sz_00"] + ask_sz["ask_sz_00"] + eps
+    signed_trade_proxy = signed_trade_proxy / top_depth
     feat["signed_volume_proxy"] = signed_trade_proxy
     trade_mask = pd.Series((sign != 0).astype("int8"), index=df.index)
     cum_us = dt_us.cumsum()
@@ -217,16 +220,16 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
         feat[f"avg_order_size_bid_l{i}"] = bid_sz[bsz_col] / (bct + eps)
         feat[f"avg_order_size_ask_l{i}"] = ask_sz[asz_col] / (act + eps)
 
-    feat["micro_price"] = (
+    micro_price = (
         ask_px_filled["ask_px_00"] * bid_sz["bid_sz_00"] + bid_px_filled["bid_px_00"] * ask_sz["ask_sz_00"]
     ) / (bid_sz["bid_sz_00"] + ask_sz["ask_sz_00"] + eps)
-    feat["micro_price_rel_mid"] = (feat["micro_price"] / mid) - 1.0
+    feat["micro_price_rel_mid"] = (micro_price / mid) - 1.0
     weighted_depth_notional = (bid_px_filled.to_numpy() * bid_sz.to_numpy()).sum(axis=1) + (
         ask_px_filled.to_numpy() * ask_sz.to_numpy()
     ).sum(axis=1)
     weighted_depth_size = bid_sz.sum(axis=1) + ask_sz.sum(axis=1) + eps
-    feat["weighted_mid"] = weighted_depth_notional / weighted_depth_size
-    feat["weighted_mid_rel_mid"] = (feat["weighted_mid"] / mid) - 1.0
+    weighted_mid = weighted_depth_notional / weighted_depth_size
+    feat["weighted_mid_rel_mid"] = (weighted_mid / mid) - 1.0
 
     for col in BID_PX:
         feat[f"{col}_rel_mid"] = ((bid_px[col] / mid) - 1.0).fillna(0.0)

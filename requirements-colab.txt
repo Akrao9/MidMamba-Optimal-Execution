@@ -10,6 +10,7 @@ databento
 gymnasium
 mamba-ssm
 matplotlib
+numba>=0.62.0
 numpy
 pandas
 pyarrow

@@ -287,7 +287,7 @@ def _opposite_touch_flow(row: pd.Series, next_row: pd.Series, side: Side) -> flo
 
 def _validate_fill_model(fill_model: str) -> FillModel:
     if fill_model not in FILL_MODELS:
-        raise ValueError(f"fill_model must be one of {FILL_MODELS} or 'random', got {fill_model!r}")
+        raise ValueError(f"fill_model must be one of {FILL_MODELS}, got {fill_model!r}")
     return fill_model  # type: ignore[return-value]
 
 
@@ -901,7 +901,8 @@ class MidMambaExecutionEnv(gym.Env):
         denom = max(self.arrival_price * self.initial_inventory, 1e-9)
         return {
             "side": self.side,
-            "step": int(self.current_step),
+            "step": int(t),
+            "next_step": int(self.current_step),
             "arrival_price": float(self.arrival_price),
             "mid_now": mid_now,
             "spread_now": spread_now,

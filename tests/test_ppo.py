@@ -55,6 +55,32 @@ def test_sb3_rollout_logger_callback_can_instantiate() -> None:
     assert callback._on_step() is True
 
 
+def test_load_eval_vec_env_requires_trusted_vecnormalize(tmp_path) -> None:
+    pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
+    from midmamba.rl import load_eval_vec_env
+
+    loader = MBP10WindowLoader.from_book(_book(16), seed=3)
+    vecnorm_path = tmp_path / "stats.pkl"
+    vecnorm_path.write_bytes(b"not a real vecnormalize pickle")
+
+    with pytest.raises(ValueError, match="VecNormalize stats"):
+        load_eval_vec_env(
+            loader=loader,
+            stack_size=2,
+            seed=0,
+            execution_steps=4,
+            parent_quantity=100.0,
+            side="buy",
+            fill_model="proportional",
+            gamma=0.99,
+            norm_obs=True,
+            norm_reward=False,
+            reward_kwargs={},
+            vecnorm_path=vecnorm_path,
+            trust_vecnormalize=False,
+        )
+
+
 def test_sb3_autocast_policy_short_learn_smoke() -> None:
     pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
     from midmamba.rl import (

@@ -263,6 +263,17 @@ def test_midmamba_execution_env_market_aggressiveness_caps_visible_levels() -> N
     assert reward < 0.0
 
 
+def test_midmamba_execution_env_info_step_is_execution_index() -> None:
+    features = np.zeros((3, 2), dtype=np.float32)
+    env = MidMambaExecutionEnv(_WindowLoader(features, _book(3)), execution_steps=3, initial_inventory=100.0)
+    env.reset()
+
+    _, _, _, _, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
+
+    assert info["step"] == 0
+    assert info["next_step"] == 1
+
+
 def test_midmamba_execution_env_zero_aggressiveness_is_market_one_level() -> None:
     """aggressiveness=0.0 → scaled=0.0 → max_levels=max(1,ceil(0))=1 → market order 1 level."""
     book = _book(3)
@@ -277,6 +288,12 @@ def test_midmamba_execution_env_zero_aggressiveness_is_market_one_level() -> Non
     assert truncated is False
     assert info["executed_shares"] == pytest.approx(100.0)
     assert info["levels_touched"] == 1
+
+
+def test_passive_touch_fill_rejects_random_as_resolved_model() -> None:
+    book = _book(2)
+    with pytest.raises(ValueError, match="fill_model must be one of"):
+        passive_touch_fill(book.iloc[0], book.iloc[1], "buy", 100.0, fill_model="random")  # type: ignore[arg-type]
 
 
 def test_midmamba_execution_env_passive_action_uses_queue_depletion() -> None:

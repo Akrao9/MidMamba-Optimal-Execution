@@ -48,13 +48,13 @@ def test_twap_execution_slices_parent_order_across_window() -> None:
     assert result.terminal_penalty_bps == pytest.approx(0.0)
 
 
-def test_twap_execution_applies_terminal_penalty_when_window_is_too_short() -> None:
+def test_twap_execution_reduces_slices_when_window_is_too_short() -> None:
     result = run_twap_execution(_book(3), parent_quantity=100.0, n_slices=4, terminal_penalty_bps=800.0)
 
     assert result.steps == 2
-    assert result.filled_qty == pytest.approx(50.0)
-    assert result.remaining_inventory == pytest.approx(50.0)
-    assert result.terminal_penalty_bps == pytest.approx(400.0)
+    assert result.filled_qty == pytest.approx(100.0)
+    assert result.remaining_inventory == pytest.approx(0.0)
+    assert result.terminal_penalty_bps == pytest.approx(0.0)
 
 
 def test_twap_execution_rejects_non_positive_slices() -> None:
@@ -74,6 +74,15 @@ def test_almgren_chriss_execution_returns_baseline_result() -> None:
 
     assert result.name == "almgren_chriss"
     assert result.steps == 5
+    assert result.filled_qty == pytest.approx(100.0)
+    assert result.remaining_inventory == pytest.approx(0.0)
+
+
+def test_almgren_chriss_execution_rebuilds_schedule_for_short_window() -> None:
+    result = run_almgren_chriss_execution(_book(3), parent_quantity=100.0, n_slices=5)
+
+    assert result.name == "almgren_chriss"
+    assert result.steps == 3
     assert result.filled_qty == pytest.approx(100.0)
     assert result.remaining_inventory == pytest.approx(0.0)
 

@@ -358,6 +358,54 @@ def test_window_loader_from_dbn_files_chunks_resamples_per_file(
     assert loader.n_rows == 8
 
 
+def test_window_loader_from_dbn_files_chunks_marks_file_seams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame_a = _book(2)
+    idx_a = pd.date_range("2025-10-01 13:30:00", periods=2, freq="100ms", tz="UTC", name="ts_recv")
+    frame_a.index = idx_a
+    frame_a["ts_event"] = idx_a
+    frame_a["ts_recv"] = idx_a
+
+    frame_b = _book(3)
+    idx_b = pd.date_range("2025-10-01 13:30:00.200", periods=3, freq="100ms", tz="UTC", name="ts_recv")
+    frame_b.index = idx_b
+    frame_b["ts_event"] = idx_b
+    frame_b["ts_recv"] = idx_b
+    frame_b.loc[idx_b[0], "bid_sz_00"] = 10.0
+
+    opened: list[str] = []
+
+    class _Store:
+        def __init__(self, frame: pd.DataFrame) -> None:
+            self.frame = frame
+
+        @staticmethod
+        def from_file(path: str) -> _Store:
+            opened.append(path)
+            return _Store(frame_a if path.endswith("a.dbn.zst") else frame_b)
+
+        def to_df(self, count: int):
+            yield self.frame
+
+    monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))
+
+    loader = MBP10WindowLoader.from_dbn_files_chunks(
+        ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"],
+        chunk_rows=100,
+        min_rows=5,
+    )
+
+    assert opened == ["/tmp/a.dbn.zst", "/tmp/b.dbn.zst"]
+    assert loader._session_ends.tolist() == [1]
+    with pytest.raises(ValueError, match="session boundary"):
+        loader.sample_window(2, start=1)
+
+    mlofi_l0 = loader.feature_names.index("mlofi_l0")
+    assert loader.features[2, mlofi_l0] == pytest.approx(0.0)
+    assert loader._passive_buy_flow[1] == pytest.approx(0.0)
+
+
 def test_window_loader_from_dbn_file_validates_sample_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Store:
         @staticmethod

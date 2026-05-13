@@ -68,15 +68,24 @@ def run_twap_execution(
     n_slices: int = 10,
     terminal_penalty_bps: float = 500.0,
 ) -> BaselineResult:
+    """Run TWAP over the available replay horizon.
+
+    If ``n_slices`` exceeds the rows available in ``book``, the baseline reduces
+    the slice count to the executable window and still targets the full parent
+    quantity. This keeps the reported TWAP baseline a full-horizon schedule
+    rather than a partially executed schedule penalized for missing data.
+    """
     if n_slices <= 0:
         raise ValueError("n_slices must be positive")
-    end_index = min(len(book) - 1, int(n_slices))
+    if len(book) < 2:
+        raise ValueError("book must contain at least two rows")
+    effective_slices = min(int(n_slices), len(book) - 1)
     env = MBP10ExecutionEnv(
         book,
         side=side,
         parent_quantity=parent_quantity,
-        child_fraction=1.0 / float(n_slices),
-        end_index=end_index,
+        child_fraction=1.0 / float(effective_slices),
+        end_index=effective_slices,
         terminal_penalty_bps=terminal_penalty_bps,
     )
     env.reset()
@@ -177,15 +186,14 @@ def run_almgren_chriss_execution(
     temporary_impact: float = 1.0,
     terminal_penalty_bps: float = 500.0,
 ) -> BaselineResult:
-    """Run Almgren-Chriss schedule through MidMambaExecutionEnv for consistent accounting."""
-    schedule = almgren_chriss_schedule(
-        parent_quantity,
-        n_slices,
-        risk_aversion=risk_aversion,
-        volatility=volatility,
-        temporary_impact=temporary_impact,
-    )
+    """Run Almgren-Chriss through MidMambaExecutionEnv for consistent accounting.
 
+    If ``n_slices`` is longer than the valid replay window, the AC schedule is
+    rebuilt on the shorter horizon so child quantities still sum to the full
+    parent quantity.
+    """
+    if n_slices <= 0:
+        raise ValueError("n_slices must be positive")
     prepared = add_market_fields(book) if "mid" not in book.columns or "spread" not in book.columns else book.copy()
     prepared = drop_invalid_rows(prepared).sort_index(kind="stable")
     if len(prepared) < 2:
@@ -193,6 +201,13 @@ def run_almgren_chriss_execution(
 
     execution_steps = min(n_slices, len(prepared))
     execution_steps = max(execution_steps, 2)
+    schedule = almgren_chriss_schedule(
+        parent_quantity,
+        execution_steps,
+        risk_aversion=risk_aversion,
+        volatility=volatility,
+        temporary_impact=temporary_impact,
+    )
 
     loader = _FixedWindowLoader(prepared)
     env = MidMambaExecutionEnv(

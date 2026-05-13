@@ -31,6 +31,11 @@ except ImportError as e:  # pragma: no cover
     raise ImportError("Install stable-baselines3: pip install stable-baselines3") from e
 
 
+_VECNORMALIZE_TRUST_ERROR = (
+    "Refusing to load VecNormalize stats without trust_vecnormalize=True. "
+    "VecNormalize .pkl files use pickle-style deserialization; only load artifacts you created or otherwise trust."
+)
+
 
 class SB3RolloutLoggerCallback(BaseCallback):
     """Capture SB3 logger name_to_value after each rollout for lightweight CSV/plotting."""
@@ -363,8 +368,9 @@ def load_eval_vec_env(
     reward_kwargs: dict[str, Any],
     vecnorm_path: str | Path | None,
     training_vec: VecNormalize | None = None,
+    trust_vecnormalize: bool = False,
 ) -> VecNormalize:
-    """Single-env eval vector env with optional VecNormalize stats."""
+    """Single-env eval vector env with optional trusted VecNormalize stats."""
     raw = build_stacked_vec_env(
         loader,
         n_envs=1,
@@ -378,6 +384,8 @@ def load_eval_vec_env(
         use_subproc=False,
     )
     if vecnorm_path is not None and Path(vecnorm_path).is_file():
+        if not trust_vecnormalize:
+            raise ValueError(_VECNORMALIZE_TRUST_ERROR)
         v = VecNormalize.load(str(vecnorm_path), raw)
     else:
         v = VecNormalize(

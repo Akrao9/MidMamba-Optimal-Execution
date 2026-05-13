@@ -32,7 +32,8 @@ from midmamba.eval import (
 
 _CHECKPOINT_TRUST_ERROR = (
     "Refusing to load SB3/PyTorch checkpoint without --trust-checkpoint. "
-    "These artifacts use pickle-style deserialization; only load checkpoints you created or otherwise trust."
+    "SB3 model .zip and VecNormalize .pkl artifacts use pickle-style deserialization; "
+    "only load checkpoints you created or otherwise trust."
 )
 
 
@@ -125,6 +126,7 @@ def _load_sb3(
         reward_kwargs=reward_kwargs,
         vecnorm_path=vecnorm,
         training_vec=None,
+        trust_vecnormalize=bool(getattr(args, "trust_checkpoint", False)),
     )
     model = PPO.load(str(checkpoint), env=vec_eval, device=device, print_system_info=False)
     return model, vec_eval, cfg
@@ -228,8 +230,8 @@ def parse_args() -> argparse.Namespace:
         "--trust-checkpoint",
         action="store_true",
         help=(
-            "Allow SB3/PyTorch checkpoint loading. Only use for checkpoints you created or otherwise trust; "
-            "loading uses pickle-style deserialization."
+            "Allow SB3/PyTorch checkpoint and VecNormalize .pkl loading. Only use for artifacts you created "
+            "or otherwise trust; loading uses pickle-style deserialization."
         ),
     )
     parser.add_argument("--vecnorm-path", type=Path, default=None, help="VecNormalize.pkl from training (optional).")

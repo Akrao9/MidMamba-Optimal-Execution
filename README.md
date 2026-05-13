@@ -77,7 +77,7 @@ For RTH-only local runs, prefer `--chunk-rows` so the script decodes DBN data in
 pieces and stops once enough post-filter rows are available. If the scan still
 does not reach 09:30 ET, increase `--max-chunks` or run it in Colab.
 
-SB3 checkpoints are **`.zip`** (model) plus optional **`{stem}_vecnormalize.pkl`** (normalization stats) and **`{stem}.run_config.json`** (hyperparameters for eval). If the vecnorm file sits next to the `.zip` with that naming, `evaluate_execution.py` picks it up even without a run config. Loading SB3/PyTorch checkpoints uses pickle-style deserialization, so pass `--trust-checkpoint` only for artifacts you created or otherwise trust.
+SB3 checkpoints are **`.zip`** (model) plus optional **`{stem}_vecnormalize.pkl`** (normalization stats) and **`{stem}.run_config.json`** (hyperparameters for eval). If the vecnorm file sits next to the `.zip` with that naming, `evaluate_execution.py` picks it up even without a run config. Loading the SB3 `.zip` and VecNormalize `.pkl` uses pickle-style deserialization, so pass `--trust-checkpoint` only for artifacts you created or otherwise trust.
 
 Fixed-cadence snapshots are causal/right-labeled so rows only contain book states observed at or before the decision timestamp. They default to Pandas. For licensed kdb+/PyKX environments, pass `--snapshot-backend pykx` to use embedded q for the initial LOB snapshot aggregation; PPO rollouts still consume precomputed NumPy arrays, including passive buy/sell queue-depletion flows, so no q calls run inside `env.step()`. Optional Numba simulator kernels are available with `pip install -e ".[speed]"` and `MIDMAMBA_USE_NUMBA=1`.
 

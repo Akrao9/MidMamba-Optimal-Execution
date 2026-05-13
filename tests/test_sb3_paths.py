@@ -31,3 +31,12 @@ def test_default_run_config_path(tmp_path: Path) -> None:
     assert default_run_config_path(ckpt) is None
     cfg.write_text("{}")
     assert default_run_config_path(ckpt) == cfg
+
+
+def test_default_run_config_path_supports_compound_suffix(tmp_path: Path) -> None:
+    ckpt = tmp_path / "m.tar.gz"
+    ckpt.write_text("x")
+    cfg = tmp_path / "m.tar.gz.run_config.json"
+    cfg.write_text("{}")
+
+    assert default_run_config_path(ckpt) == cfg

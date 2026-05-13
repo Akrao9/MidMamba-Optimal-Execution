@@ -34,6 +34,7 @@ class MBP10WindowLoader:
         *,
         feature_names: Sequence[str] | None = None,
         seed: int | None = None,
+        session_ends: Sequence[int] | None = None,
     ) -> None:
         features = np.asarray(features, dtype=np.float32)
         if features.ndim != 2:
@@ -53,18 +54,15 @@ class MBP10WindowLoader:
         self.n_rows = int(features.shape[0])
         self.rng = np.random.default_rng(seed)
 
-        # Detect session boundaries (gaps > 2h) before resetting to RangeIndex.
-        self._session_ends = np.array([], dtype=np.int64)
-        self._session_bounds: list[tuple[int, int]] = [(0, self.n_rows)]
+        # Detect session boundaries before resetting to RangeIndex. Explicit
+        # boundaries are used by multi-file loaders where two files can be close
+        # in wall-clock time but still represent distinct replay sessions.
+        explicit_session_ends = _validate_session_ends(session_ends, self.n_rows)
+        detected_session_ends = np.array([], dtype=np.int64)
         if time_index is not None:
-            diffs = time_index[1:] - time_index[:-1]
-            gap_mask = diffs > pd.Timedelta(hours=2)
-            # session_ends[i] = last row index before each gap
-            self._session_ends = np.where(gap_mask)[0]
-            if len(self._session_ends) > 0:
-                starts = [0, *[int(end) + 1 for end in self._session_ends]]
-                ends = [*[int(end) + 1 for end in self._session_ends], self.n_rows]
-                self._session_bounds = list(zip(starts, ends, strict=True))
+            detected_session_ends = _session_ends_from_time_index(time_index)
+        self._session_ends = np.unique(np.concatenate([detected_session_ends, explicit_session_ends]))
+        self._session_bounds = _session_bounds_from_ends(self._session_ends, self.n_rows)
 
         # Pre-extract book arrays to speed up environment resets
         from midmamba.env.mbp10_execution_env import _extract_book_arrays, _passive_touch_flows_np
@@ -75,6 +73,9 @@ class MBP10WindowLoader:
             self._ask_px,
             self._ask_sz,
         )
+        if len(self._session_ends) > 0:
+            self._passive_buy_flow[self._session_ends] = 0.0
+            self._passive_sell_flow[self._session_ends] = 0.0
 
     def _crosses_session_boundary(self, start: int, n_steps: int) -> bool:
         """Return True if window [start, start+n_steps) spans an overnight gap."""
@@ -116,7 +117,7 @@ class MBP10WindowLoader:
         if len(prepared) < 2:
             raise ValueError("book must contain at least two valid MBP-10 rows")
 
-        feature_frame = build_feature_frame(prepared)
+        feature_frame = _build_feature_frame_by_session(prepared)
         feature_frame = feature_frame.replace([np.inf, -np.inf], np.nan).fillna(0.0)
         names = list(feature_columns or feature_frame.columns)
         missing = sorted(set(names) - set(feature_frame.columns))
@@ -218,6 +219,9 @@ class MBP10WindowLoader:
         import databento as db  # type: ignore
 
         processed_parts: list[pd.DataFrame] = []
+        processed_features: list[np.ndarray] = []
+        feature_names_out: list[str] | None = None
+        explicit_session_ends: list[int] = []
         decoded_rows = 0
         kept_rows = 0
         chunk_index = 0
@@ -261,7 +265,21 @@ class MBP10WindowLoader:
                     file_book = resample_book(file_book, resample_freq, backend=snapshot_backend)
 
                 if len(file_book) > 0:
+                    feature_frame = _build_feature_frame_by_session(file_book)
+                    feature_frame = feature_frame.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+                    names = list(feature_columns or feature_frame.columns)
+                    missing = sorted(set(names) - set(feature_frame.columns))
+                    if missing:
+                        raise ValueError(f"unknown feature columns: {missing}")
+                    if feature_names_out is None:
+                        feature_names_out = names
+                    elif names != feature_names_out:
+                        raise ValueError("feature columns changed across DBN files")
+
+                    if kept_rows > 0:
+                        explicit_session_ends.append(kept_rows - 1)
                     processed_parts.append(file_book)
+                    processed_features.append(feature_frame[names].to_numpy(dtype=np.float32, copy=True))
                     kept_rows += int(len(file_book))
                 del file_book
 
@@ -274,15 +292,14 @@ class MBP10WindowLoader:
                 "Increase --max-chunks/--chunk-rows, disable --rth-only, or reduce --window-steps."
             )
 
-        book = pd.concat(processed_parts, axis=0).sort_index(kind="stable")
-        return cls.from_book(
+        book = pd.concat(processed_parts, axis=0)
+        features = np.concatenate(processed_features, axis=0)
+        return cls(
+            features,
             book,
-            feature_columns=feature_columns,
-            resample_freq=None,
-            snapshot_backend=snapshot_backend,
-            rth_start=None,
-            rth_end=None,
+            feature_names=feature_names_out,
             seed=seed,
+            session_ends=explicit_session_ends,
         )
 
     def _resolve_start(self, n_steps: int, start: int | None) -> int:
@@ -385,6 +402,47 @@ def _event_time_frame(df: pd.DataFrame) -> pd.DataFrame:
         out["ts_recv"] = pd.to_datetime(out.index, utc=True)
     out.index = pd.DatetimeIndex(pd.to_datetime(out["ts_event"], utc=True), name="ts_event")
     return out.sort_index(kind="stable")
+
+
+def _build_feature_frame_by_session(prepared: pd.DataFrame) -> pd.DataFrame:
+    """Build diff/rolling features without letting overnight gaps leak across sessions."""
+    time_index = _time_index(prepared)
+    if time_index is None:
+        return build_feature_frame(prepared)
+    session_ends = _session_ends_from_time_index(time_index)
+    if len(session_ends) == 0:
+        return build_feature_frame(prepared)
+    frames = [
+        build_feature_frame(prepared.iloc[lo:hi])
+        for lo, hi in _session_bounds_from_ends(session_ends, len(prepared))
+    ]
+    return pd.concat(frames, axis=0)
+
+
+def _session_ends_from_time_index(time_index: pd.DatetimeIndex) -> np.ndarray:
+    diffs = time_index[1:] - time_index[:-1]
+    gap_mask = diffs > pd.Timedelta(hours=2)
+    # session_ends[i] = last row index before each gap
+    return np.where(gap_mask)[0].astype(np.int64)
+
+
+def _session_bounds_from_ends(session_ends: np.ndarray, n_rows: int) -> list[tuple[int, int]]:
+    if len(session_ends) == 0:
+        return [(0, n_rows)]
+    starts = [0, *[int(end) + 1 for end in session_ends]]
+    ends = [*[int(end) + 1 for end in session_ends], n_rows]
+    return list(zip(starts, ends, strict=True))
+
+
+def _validate_session_ends(session_ends: Sequence[int] | None, n_rows: int) -> np.ndarray:
+    if session_ends is None:
+        return np.array([], dtype=np.int64)
+    out = np.asarray([int(end) for end in session_ends], dtype=np.int64)
+    if out.size == 0:
+        return out
+    if np.any(out < 0) or np.any(out >= n_rows - 1):
+        raise ValueError("session_ends must be row indices in [0, n_rows - 2]")
+    return np.unique(out)
 
 
 def _time_index(raw_lob: pd.DataFrame) -> pd.DatetimeIndex | None:

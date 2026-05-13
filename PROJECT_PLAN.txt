@@ -87,7 +87,7 @@ Implemented and retained:
 - actor-critic model scaffold
 - initial MBP-10 execution environment
 - immediate execution, TWAP, and Almgren-Chriss baseline helpers
-- PPO smoke rollout/update utilities
+- Stable-Baselines3 PPO training/evaluation helpers
 - unit tests for features, model outputs, gradients, and simulator mechanics
 
 Important current files:
@@ -103,7 +103,8 @@ Important current files:
 - src/midmamba/env/mbp10_execution_env.py
 - src/midmamba/eval/baselines.py
 - src/midmamba/models/lob_mamba.py
-- src/midmamba/rl/ppo.py
+- src/midmamba/rl/sb3_policy.py
+- src/midmamba/rl/sb3_train.py
 - docs/DATABENTO_REFERENCE.md
 - docs/SIMULATOR_REFERENCES.md
 - docs/RL_EXECUTION_PLAN.md
@@ -136,7 +137,7 @@ Core requirements:
    - 1 = market order slice
    - 2 = passive limit order slice at the touch
 5. Define a PPO-facing continuous action space:
-   - action[0] = urgency/size in [-1, 1], mapped to [0, 1] of remaining inventory
+   - action[0] = schedule urgency in [-1, 1], mapped to a cumulative TWAP-relative target
    - action[1] = price aggressiveness in [-1, 1]
    - negative aggressiveness posts passively at the touch
    - non-negative aggressiveness crosses the spread and controls how many visible MBP-10 levels can be walked
@@ -311,7 +312,7 @@ Initial discrete action mode:
 
 Initial continuous action mode:
 
-- percentage of remaining inventory to execute
+- TWAP-relative cumulative target sizing
 - aggressiveness scalar
 - negative aggressiveness: passive touch order
 - non-negative aggressiveness: marketable order, with larger values allowed to walk more visible levels
@@ -375,8 +376,8 @@ PPO objective:
 
 Current implementation:
 
-- src/midmamba/rl/ppo.py implements squashed-Gaussian continuous actions, GAE,
-  rollout collection, and PPO updates.
+- Stable-Baselines3 PPO provides rollout collection, GAE, clipping, minibatches,
+  checkpointing, and policy evaluation plumbing.
 - scripts/train_ppo_smoke.py runs a small synthetic-data PPO smoke train and can
   optionally use sampled DBN windows. It supports Mamba backend, checkpointing,
   multi-file DBN globs, and per-episode fill-model randomization.

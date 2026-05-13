@@ -60,12 +60,13 @@ def test_window_loader_reports_unknown_feature_columns() -> None:
 
 def test_window_loader_from_book_filters_regular_trading_hours() -> None:
     book = _book(4)
+    # RTH boundary is [start, end): 13:30 UTC = 09:30 NY (in), 20:00 UTC = 16:00 NY (out).
     idx = pd.DatetimeIndex(
         [
             "2025-10-01 13:29:59+00:00",
             "2025-10-01 13:30:00+00:00",
+            "2025-10-01 13:35:00+00:00",
             "2025-10-01 20:00:00+00:00",
-            "2025-10-01 20:00:01+00:00",
         ],
         name="ts_recv",
     )
@@ -99,6 +100,39 @@ def test_window_loader_resamples_book() -> None:
     assert loader.raw_lob.iloc[2]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.500+00:00")
 
 
+def test_window_loader_detects_session_boundaries_after_reset_index() -> None:
+    session_a = _book(3)
+    session_b = _book(3)
+    session_b.index = session_b.index + pd.Timedelta(hours=6)
+    session_b["ts_event"] = session_b.index
+    session_b["ts_recv"] = session_b.index
+
+    loader = MBP10WindowLoader.from_book(pd.concat([session_a, session_b]), seed=4)
+
+    assert loader.raw_lob.index.name is None
+    assert loader._session_ends.tolist() == [2]
+    with pytest.raises(ValueError, match="session boundary"):
+        loader.sample_window(2, start=2)
+
+    for _ in range(20):
+        _, raw_lob = loader.sample_window(3)
+        elapsed = raw_lob["ts_event"].max() - raw_lob["ts_event"].min()
+        assert elapsed < pd.Timedelta(hours=1)
+
+
+def test_window_loader_reports_when_no_session_can_fit_random_window() -> None:
+    session_a = _book(3)
+    session_b = _book(3)
+    session_b.index = session_b.index + pd.Timedelta(hours=6)
+    session_b["ts_event"] = session_b.index
+    session_b["ts_recv"] = session_b.index
+
+    loader = MBP10WindowLoader.from_book(pd.concat([session_a, session_b]), seed=4)
+
+    with pytest.raises(ValueError, match="no single detected session contains n_steps=4"):
+        loader.resolve_start(4, None)
+
+
 def test_window_loader_from_book_reports_empty_rth_filter() -> None:
     with pytest.raises(ValueError, match="after RTH filter"):
         MBP10WindowLoader.from_book(_book(), rth_start="12:00:00", rth_end="13:00:00")
@@ -110,7 +144,7 @@ def test_window_loader_from_dbn_file_uses_to_df_count_dataframe(monkeypatch: pyt
 
     class _Store:
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             calls.append(("from_file", None))
             assert path == "/tmp/fake.dbn.zst"
             return _Store()
@@ -139,7 +173,7 @@ def test_window_loader_from_dbn_file_accepts_dataframe_iterator(monkeypatch: pyt
 
     class _Store:
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             calls.append(("from_file", None))
             return _Store()
 
@@ -174,7 +208,7 @@ def test_window_loader_from_dbn_file_chunks_scans_until_enough_rth_rows(
 
     class _Store:
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             return _Store()
 
         def to_df(self, count: int):
@@ -213,7 +247,7 @@ def test_window_loader_from_dbn_files_chunks_reads_multiple_paths(
             self.frame = frame
 
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             opened.append(path)
             return _Store(frame_a if path.endswith("a.dbn.zst") else frame_b)
 
@@ -239,7 +273,7 @@ def test_window_loader_from_dbn_file_chunks_reports_insufficient_rows(
 
     class _Store:
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             return _Store()
 
         def to_df(self, count: int):
@@ -276,7 +310,7 @@ def test_window_loader_from_dbn_files_chunks_resamples_per_file(
             self.frame = frame
 
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             opened.append(path)
             return _Store(frame_a if path.endswith("a.dbn.zst") else frame_b)
 
@@ -302,7 +336,7 @@ def test_window_loader_from_dbn_files_chunks_resamples_per_file(
 def test_window_loader_from_dbn_file_validates_sample_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Store:
         @staticmethod
-        def from_file(path: str) -> "_Store":
+        def from_file(path: str) -> _Store:
             return _Store()
 
     monkeypatch.setitem(sys.modules, "databento", SimpleNamespace(DBNStore=_Store))

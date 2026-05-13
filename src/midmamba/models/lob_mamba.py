@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+_MAMBA2: type | None = None
+
+
+def _load_mamba2() -> type:
+    """Lazily import and cache ``mamba_ssm.Mamba2`` so stacked layers don't re-import."""
+    global _MAMBA2
+    if _MAMBA2 is not None:
+        return _MAMBA2
+    try:
+        from mamba_ssm import Mamba2  # type: ignore
+    except ImportError as e:  # pragma: no cover
+        raise ImportError("Install mamba-ssm and causal-conv1d for the Mamba backend.") from e
+    _MAMBA2 = Mamba2
+    return _MAMBA2
 
 
 def _level_names(side: str, level: int) -> list[str]:
@@ -82,12 +96,8 @@ class TemporalBlock(nn.Module):
         self.backend = backend
         self.norm1 = nn.LayerNorm(d_model)
         if backend == "mamba":
-            try:
-                from mamba_ssm import Mamba2  # type: ignore
-
-                self.mixer = Mamba2(d_model=d_model, **(mamba_kwargs or {}))
-            except ImportError as e:  # pragma: no cover
-                raise ImportError("Install mamba-ssm and causal-conv1d for the Mamba backend.") from e
+            Mamba2 = _load_mamba2()
+            self.mixer = Mamba2(d_model=d_model, **(mamba_kwargs or {}))
         else:
             self.mixer = nn.GRU(
                 input_size=d_model,
@@ -467,10 +477,8 @@ class LOBMambaRLExecutionAgent(nn.Module):
             # bounded actions. Initialized to 0 (std=1) the squashed policy is
             # effectively uniform on [-1,1] and cannot learn (entropy floor).
             self.log_std = nn.Parameter(torch.full((self.action_dim,), -1.2))
-            # Bias the size action negative so the initial policy is
-            # conservative (~5% of inventory per step), not 50%. Convention
-            # for the execution env: action[0] is size, mapped via
-            # (action[0]+1)/2 to a fraction of initial inventory.
+            # Bias the size action negative so the initial policy starts behind
+            # the TWAP schedule instead of front-loading inventory.
             with torch.no_grad():
                 if self.action_dim >= 1:
                     self.actor[-1].bias[0] = -1.5

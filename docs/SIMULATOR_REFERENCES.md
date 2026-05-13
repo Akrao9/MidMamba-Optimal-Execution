@@ -58,7 +58,7 @@ The first implementation exposes a small, testable contract:
   - `action=1`: execute a market slice
   - `action=2`: post a passive limit slice at the touch
 - `MidMambaExecutionEnv` continuous actions:
-  - `action[0]`: urgency/size in `[-1, 1]`, mapped to `[0, 1]` of remaining inventory
+  - `action[0]`: schedule urgency in `[-1, 1]`, mapped to a cumulative TWAP-relative target
   - `action[1]`: aggressiveness in `[-1, 1]`; negative posts passively, non-negative crosses the spread
 
 The simulator should track:

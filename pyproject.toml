@@ -11,22 +11,24 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "databento>=0.30.0",
-    "gymnasium>=0.29.0",
+    "gymnasium>=1.0.0",
+    "stable-baselines3>=2.4.0",
     "numpy>=1.26.0",
-    "pandas>=2.0.0",
+    "pandas>=2.2.0",
     "pyarrow>=14.0.0",
     "torch>=2.2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
+    "pytest>=8.0.0",
     "matplotlib>=3.8.0",
     "tqdm>=4.66.0",
     "wandb>=0.16.0",
+    "ruff>=0.6.0",
 ]
 gpu = [
-    "mamba-ssm",
+    "mamba-ssm>=2.2.0",
     "causal-conv1d>=1.4.0",
     "torchao",
 ]
@@ -41,3 +43,17 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["notebooks/*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+# Scripts manipulate sys.path before importing the package.
+"scripts/*" = ["E402"]

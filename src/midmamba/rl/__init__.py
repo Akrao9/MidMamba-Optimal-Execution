@@ -1,25 +1,39 @@
-"""PPO utilities for execution-agent training."""
+"""Stable-Baselines3 PPO helpers for execution-agent training."""
 
-from .ppo import (
-    RolloutBatch,
-    collect_rollout,
-    compute_gae,
-    evaluate_squashed_normal,
-    ppo_update,
-    sample_squashed_normal,
+from .sb3_policy import (
+    AutocastActorCriticPolicy,
+    LOBMambaFeaturesExtractor,
+    execution_obs_feature_names,
+    midmamba_policy_kwargs,
 )
-from .training import make_lr_lambda, train_loop
-from .vec_normalize import RunningMeanStd, VecNormalize
+from .sb3_train import (
+    SB3RolloutLoggerCallback,
+    build_stacked_vec_env,
+    build_vec_env,
+    compile_sb3_backbone,
+    load_eval_vec_env,
+    make_lr_schedule,
+    make_midmamba_env_thunk,
+    make_ppo,
+    save_sb3_checkpoint,
+    stacked_observation_space,
+    unwrap_compiled_sb3_backbone,
+)
 
 __all__ = [
-    "RolloutBatch",
-    "RunningMeanStd",
-    "VecNormalize",
-    "collect_rollout",
-    "compute_gae",
-    "evaluate_squashed_normal",
-    "make_lr_lambda",
-    "ppo_update",
-    "sample_squashed_normal",
-    "train_loop",
+    "AutocastActorCriticPolicy",
+    "LOBMambaFeaturesExtractor",
+    "SB3RolloutLoggerCallback",
+    "build_stacked_vec_env",
+    "build_vec_env",
+    "compile_sb3_backbone",
+    "execution_obs_feature_names",
+    "load_eval_vec_env",
+    "make_lr_schedule",
+    "make_midmamba_env_thunk",
+    "make_ppo",
+    "midmamba_policy_kwargs",
+    "save_sb3_checkpoint",
+    "stacked_observation_space",
+    "unwrap_compiled_sb3_backbone",
 ]

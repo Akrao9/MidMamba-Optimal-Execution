@@ -17,11 +17,15 @@ ASK_CT = level_cols("ask_ct")
 
 
 def apply_rth_filter(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """Filter to America/New_York wallclock window [start, end). End is exclusive
+    to avoid pulling in closing-auction prints at 16:00:00 sharp."""
     index = pd.DatetimeIndex(df.index)
     if index.tz is None:
         index = index.tz_localize("UTC")
     local_idx = index.tz_convert("America/New_York")
-    mask = (local_idx.time >= pd.Timestamp(start).time()) & (local_idx.time <= pd.Timestamp(end).time())
+    start_t = pd.Timestamp(start).time()
+    end_t = pd.Timestamp(end).time()
+    mask = (local_idx.time >= start_t) & (local_idx.time < end_t)
     return df.loc[mask]
 
 
@@ -112,7 +116,9 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     feat["hump_indicator_ask"] = (ask_max_idx != 0).astype("int8")
 
     # Inter-event timing and event-arrival rates.
-    dt_us = pd.Series(df.index.view("int64"), index=df.index).diff() / 1_000.0
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError("build_feature_frame requires a DatetimeIndex")
+    dt_us = pd.Series(df.index.asi8, index=df.index).diff() / 1_000.0
     dt_us = dt_us.clip(lower=1.0).fillna(1.0)
     feat["log_dt_us"] = np.log(dt_us)
     dt_s = dt_us / 1_000_000.0

@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import gymnasium as gym
-from gymnasium import spaces
 import numpy as np
 import pandas as pd
+from gymnasium import spaces
 
 from midmamba.data.mbp10_features import ASK_PX, ASK_SZ, BID_PX, BID_SZ, add_market_fields, drop_invalid_rows
-
 
 Side = Literal["buy", "sell"]
 FillModel = Literal["conservative", "proportional", "optimistic"]
@@ -271,7 +270,6 @@ class MBP10ExecutionEnv(gym.Env):
         self.cumulative_shortfall = 0.0
         self.last_fill_qty = 0.0
         self.last_fill_price = 0.0
-        self.rng = np.random.default_rng()
         self.active_fill_model = "proportional"
         self._done = False
 
@@ -312,8 +310,6 @@ class MBP10ExecutionEnv(gym.Env):
         *seed* for reproducible evaluation.
         """
         super().reset(seed=seed)
-        if seed is not None:
-            self.rng = np.random.default_rng(seed)
         opts = options or {}
         self.side = opts.get("side", self.default_side)
         if self.side not in ("buy", "sell"):
@@ -334,7 +330,7 @@ class MBP10ExecutionEnv(gym.Env):
         self.cumulative_shortfall = 0.0
         self.last_fill_qty = 0.0
         self.last_fill_price = 0.0
-        self.active_fill_model = resolve_fill_model(opts.get("fill_model", self.fill_model_spec), self.rng)
+        self.active_fill_model = resolve_fill_model(opts.get("fill_model", self.fill_model_spec), self.np_random)
         self._done = False
         return self._observation(), self._info()
 
@@ -435,7 +431,7 @@ class MBP10ExecutionEnv(gym.Env):
         row = self.book.iloc[idx]
         mid_now = float(row["mid"])
         spread_now = float(row["spread"])
-        
+
         slippage = 0.0
         if self.last_fill_qty > 0:
             if self.side == "buy":
@@ -473,10 +469,12 @@ class MidMambaExecutionEnv(gym.Env):
       sequence of rows/dicts containing MBP-10 price and size columns.
 
     Action vector:
-    - action[0]: urgency/size in [-1, 1], mapped to [0, 1] of remaining inventory.
+    - action[0]: schedule urgency in [-1, 1]. 0 targets the next TWAP
+      cumulative fill, -1 waits, and +1 targets up to 2x TWAP progress.
     - action[1]: aggressiveness in [-1, 1]. Negative posts passively at the touch;
       non-negative crosses the spread, with larger values allowed to walk more
-      visible MBP-10 levels.
+      visible MBP-10 levels. The final step always becomes marketable and may
+      walk all visible levels to reduce leftover inventory.
     """
 
     metadata = {"render_modes": []}
@@ -545,7 +543,6 @@ class MidMambaExecutionEnv(gym.Env):
         self.cumulative_fees = 0.0
         self.last_fill_qty = 0.0
         self.sigma_step_bps = 1.0
-        self.rng = np.random.default_rng()
         self.active_fill_model = "proportional"
         self._done = False
 
@@ -556,8 +553,6 @@ class MidMambaExecutionEnv(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
-        if seed is not None:
-            self.rng = np.random.default_rng(seed)
         opts = options or {}
         self.side = opts.get("side", self.default_side)
         if self.side not in ("buy", "sell"):
@@ -599,7 +594,7 @@ class MidMambaExecutionEnv(gym.Env):
         self.cumulative_fees = 0.0
         self.last_fill_qty = 0.0
         self.arrival_price = float(mid[0])
-        self.active_fill_model = resolve_fill_model(opts.get("fill_model", self.fill_model_spec), self.rng)
+        self.active_fill_model = resolve_fill_model(opts.get("fill_model", self.fill_model_spec), self.np_random)
         self._done = False
 
         safe_mid = np.maximum(mid, 1e-9)
@@ -616,10 +611,14 @@ class MidMambaExecutionEnv(gym.Env):
         if action_arr.shape != (2,):
             raise ValueError(f"action must have shape (2,), got {action_arr.shape}")
         action_arr = np.clip(action_arr, -1.0, 1.0)
-        # action[0] ∈ [-1,1] → per-step rate ∈ [0, 2/max_steps].
-        # action=0 → rate=1/max_steps → constant policy executes TWAP exactly.
-        rate = float((action_arr[0] + 1.0) / self.max_steps)
-        target_qty = min(self.inventory, rate * self.initial_inventory)
+        # Cumulative TWAP-relative target. A zero size action follows TWAP exactly,
+        # -1 waits, and +1 can move up to twice as fast while still targeting a
+        # valid inventory trajectory. On the final step, action[0] >= 0 targets
+        # full completion.
+        twap_next_frac = (self.current_step + 1) / self.max_steps
+        target_cum_frac = float(np.clip(twap_next_frac * (action_arr[0] + 1.0), 0.0, 1.0))
+        target_cum_qty = target_cum_frac * self.initial_inventory
+        target_qty = min(self.inventory, max(0.0, target_cum_qty - self.filled_qty))
         aggressiveness = float(action_arr[1])
 
         t = self.current_step
@@ -637,7 +636,7 @@ class MidMambaExecutionEnv(gym.Env):
                     self.side, target_qty, self.active_fill_model,
                 )
             else:
-                scaled = max(0.0, aggressiveness) if not is_last_step else 1.0
+                scaled = 1.0 if is_last_step else max(0.0, aggressiveness)
                 max_levels = max(1, int(np.ceil(scaled * 10.0)))
                 if self.side == "buy":
                     fill = _walk_book_np(self._ask_px[t], self._ask_sz[t], target_qty, max_levels)
@@ -660,27 +659,36 @@ class MidMambaExecutionEnv(gym.Env):
 
         # Volatility-scaled completion penalty (σ√T risk of leftover inventory)
         completion_penalty = 0.0
+        terminal_penalty = 0.0
         if (terminated or truncated) and self.inventory > 1e-9:
             remaining_frac = self.inventory / self.initial_inventory
             sqrt_horizon = self.max_steps ** 0.5
             completion_penalty = self.beta_completion * self.sigma_step_bps * sqrt_horizon * remaining_frac
+            terminal_penalty = self.terminal_penalty_bps * remaining_frac
 
         reward = -(
             self.beta_is * (-is_reward_bps)
             + schedule_penalty
             + completion_penalty
+            + terminal_penalty
         )
 
         if self.reward_clip > 0:
             reward = max(-self.reward_clip, min(self.reward_clip, reward))
 
         obs = self._get_obs()
-        info = self._info(t_exec, fill.filled_qty, fill.avg_price, fill.levels_touched, completion_penalty)
+        info = self._info(t_exec, fill.filled_qty, fill.avg_price, fill.levels_touched, terminal_penalty)
         info["reward_is_bps"] = float(is_reward_bps)
         info["reward_schedule_penalty"] = float(schedule_penalty)
         info["reward_completion_penalty"] = float(completion_penalty)
+        info["reward_terminal_penalty"] = float(terminal_penalty)
         info["sigma_step_bps"] = float(self.sigma_step_bps)
         info["schedule_deviation"] = float(schedule_dev)
+        info["target_qty"] = float(target_qty)
+        info["target_cum_frac"] = float(target_cum_frac)
+        info["unfilled_target_qty"] = float(fill.unfilled_qty)
+        info["is_passive"] = int(is_passive)
+        info["aggressiveness"] = float(aggressiveness)
         return obs, float(reward), terminated, truncated, info
 
     def _apply_fill(self, fill: FillResult, *, is_passive: bool = False) -> float:
@@ -733,7 +741,7 @@ class MidMambaExecutionEnv(gym.Env):
     ) -> dict[str, float | int | str]:
         mid_now = float(self._mid[t])
         spread_now = float(self._ask_px[t, 0] - self._bid_px[t, 0])
-        
+
         slippage = 0.0
         if executed_shares > 0:
             if self.side == "buy":

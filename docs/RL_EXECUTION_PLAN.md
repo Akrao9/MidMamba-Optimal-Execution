@@ -15,7 +15,7 @@ Build an execution environment over Databento MBP-10 snapshots.
 - Emit observations, rewards, done flags, and diagnostic info with a Gymnasium-style interface.
 - Use `MBP10ExecutionEnv` for low-level discrete physics tests.
 - Use `MidMambaExecutionEnv` for PPO-facing continuous actions:
-  - action[0] maps to the percent of remaining inventory to attempt.
+  - action[0] maps to a cumulative TWAP-relative target: -1 waits, 0 tracks TWAP, and +1 targets up to 2x TWAP progress.
   - action[1] maps to passive touch posting when negative, or spread-crossing aggressiveness when non-negative.
 
 ## Phase 2: Data Pipeline
@@ -46,7 +46,10 @@ Train against implementation shortfall.
 - Rollouts store observations, actions, log probabilities, values, rewards, and done flags.
 - Use GAE for advantages.
 - Update with PPO clipped objective, value loss, and entropy regularization.
-- Initial implementation: `src/midmamba/rl/ppo.py` and `scripts/train_ppo_smoke.py`, with Mamba backend, checkpoints, DBN globs, and fill-model randomization.
+- Current implementation: Stable-Baselines3 PPO via `src/midmamba/rl/sb3_policy.py`,
+  `src/midmamba/rl/sb3_train.py`, and `scripts/train_ppo_smoke.py`, with Mamba/GRU
+  feature extractors, checkpoints, DBN globs, VecNormalize stats, and fill-model
+  randomization.
 
 ## Phase 5: Evaluation
 

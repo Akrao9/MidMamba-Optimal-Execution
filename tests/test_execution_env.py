@@ -184,7 +184,7 @@ def test_midmamba_execution_env_market_aggressiveness_caps_visible_levels() -> N
     book.loc[:, "ask_sz_00"] = 10.0
     book.loc[:, "ask_sz_01"] = 50.0
     features = np.zeros((3, 2), dtype=np.float32)
-    # action[0]=1 with steps=3 → rate=2/3 → target=66.67, but level 0 only has 10
+    # action[0]=1 with steps=3 → cumulative target=2/3 → target=66.67, but level 0 only has 10
     env = MidMambaExecutionEnv(_WindowLoader(features, book), execution_steps=3, initial_inventory=100.0)
     env.reset()
 
@@ -203,7 +203,7 @@ def test_midmamba_execution_env_zero_aggressiveness_is_market_one_level() -> Non
     """aggressiveness=0.0 → scaled=0.0 → max_levels=max(1,ceil(0))=1 → market order 1 level."""
     book = _book(3)
     features = np.zeros((3, 2), dtype=np.float32)
-    # action[0]=1 with steps=3 → rate=2/3 → target=min(200, 133.3)=133.3, but level 0 has only 100
+    # action[0]=1 with steps=3 → cumulative target=2/3 → target=min(200, 133.3), but level 0 has only 100
     env = MidMambaExecutionEnv(_WindowLoader(features, book), execution_steps=3, initial_inventory=200.0)
     env.reset()
 
@@ -219,7 +219,7 @@ def test_midmamba_execution_env_passive_action_uses_queue_depletion() -> None:
     book = _book(3)
     book.loc[book.index[1], "bid_sz_00"] = 50.0
     features = np.zeros((3, 2), dtype=np.float32)
-    # action[0]=1 with steps=3 → rate=2/3 → target=min(100, 66.67)=66.67
+    # action[0]=1 with steps=3 → cumulative target=2/3 → target=min(100, 66.67)
     # queue_share = 66.67 / (100 + 66.67) = 0.4, flow=50, filled=min(66.67, 50*0.4)=20.0
     env = MidMambaExecutionEnv(_WindowLoader(features, book), execution_steps=3, initial_inventory=100.0)
     env.reset()
@@ -323,6 +323,57 @@ def test_midmamba_beta_is_zero_disables_is_component() -> None:
 
     _, reward, _, _, _ = env.step(np.array([1.0, 1.0], dtype=np.float32))
     assert reward == pytest.approx(0.0)
+
+
+def test_midmamba_terminal_penalty_bps_applies_to_leftover_inventory() -> None:
+    features = np.zeros((3, 2), dtype=np.float32)
+    env = MidMambaExecutionEnv(
+        _WindowLoader(features, _book(3)),
+        execution_steps=3,
+        initial_inventory=100.0,
+        terminal_penalty_bps=500.0,
+        beta_is=0.0,
+        beta_schedule=0.0,
+        beta_completion=0.0,
+        reward_clip=0.0,
+    )
+    env.reset()
+
+    for _ in range(3):
+        _, reward, terminated, truncated, info = env.step(np.array([-1.0, 0.0], dtype=np.float32))
+        if terminated or truncated:
+            break
+
+    assert truncated is True
+    assert reward == pytest.approx(-500.0)
+    assert info["terminal_penalty_bps"] == pytest.approx(500.0)
+    assert info["reward_terminal_penalty"] == pytest.approx(500.0)
+
+
+def test_midmamba_final_step_negative_aggressiveness_liquidates_marketable() -> None:
+    book = _book(2)
+    book.loc[:, "ask_sz_00"] = 10.0
+    book.loc[:, "ask_sz_01"] = 90.0
+    features = np.zeros((2, 2), dtype=np.float32)
+    env = MidMambaExecutionEnv(
+        _WindowLoader(features, book),
+        execution_steps=2,
+        initial_inventory=100.0,
+        beta_schedule=0.0,
+        beta_completion=0.0,
+        reward_clip=0.0,
+    )
+    env.reset()
+    env.step(np.array([-1.0, 0.0], dtype=np.float32))
+
+    _, _, terminated, truncated, info = env.step(np.array([0.0, -1.0], dtype=np.float32))
+
+    assert terminated is True
+    assert truncated is False
+    assert info["executed_shares"] == pytest.approx(100.0)
+    assert info["inventory"] == pytest.approx(0.0)
+    assert info["levels_touched"] == 2
+    assert info["is_passive"] == 0
 
 
 # ── Transaction cost tests ─────────────────────────────────────────────

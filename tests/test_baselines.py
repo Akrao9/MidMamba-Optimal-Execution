@@ -76,3 +76,13 @@ def test_almgren_chriss_execution_returns_baseline_result() -> None:
     assert result.steps == 5
     assert result.filled_qty == pytest.approx(100.0)
     assert result.remaining_inventory == pytest.approx(0.0)
+
+
+def test_almgren_chriss_accepts_sampled_range_index_with_timestamp_columns() -> None:
+    book = _book(6)
+    book = book.assign(ts_event=book.index, ts_recv=book.index).reset_index(drop=True)
+
+    result = run_almgren_chriss_execution(book, parent_quantity=100.0, n_slices=5)
+
+    assert result.name == "almgren_chriss"
+    assert result.filled_qty == pytest.approx(100.0)

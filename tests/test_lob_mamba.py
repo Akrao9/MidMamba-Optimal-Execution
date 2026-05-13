@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
 from midmamba.models.lob_mamba import LOBMambaBackbone, LOBMambaRLExecutionAgent, LOBSpatialStem
 

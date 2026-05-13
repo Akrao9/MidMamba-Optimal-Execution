@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Run a small PPO smoke train over the MidMamba execution environment."""
+"""Run a small Stable-Baselines3 PPO smoke train on MidMambaExecutionEnv."""
 
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +18,35 @@ if str(SRC) not in sys.path:
 from midmamba.data import MBP10WindowLoader
 from midmamba.data.mbp10_features import synthetic_book
 from midmamba.env import MidMambaExecutionEnv
-from midmamba.models import LOBMambaRLExecutionAgent
-from midmamba.rl import collect_rollout, ppo_update, VecNormalize
+from midmamba.ppo_rollout import best_batch_size_for_rollout
+from midmamba.rl import (
+    build_vec_env,
+    execution_obs_feature_names,
+    make_lr_schedule,
+    make_ppo,
+    midmamba_policy_kwargs,
+    save_sb3_checkpoint,
+    stacked_observation_space,
+)
+
+
+def _sb3_device_string(device_arg: str, *, backend: str = "gru") -> str:
+    if device_arg.lower() == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if backend == "mamba":
+            # mamba-ssm has no MPS/CPU kernel; require CUDA.
+            raise RuntimeError(
+                "backend='mamba' requires CUDA; no CUDA device available."
+            )
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if backend == "mamba" and device_arg != "cuda":
+        raise RuntimeError(
+            f"backend='mamba' requires device='cuda', got device={device_arg!r}."
+        )
+    return device_arg
 
 
 def _json_safe_config(config: dict) -> dict:
@@ -103,10 +128,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seq-len", type=int, default=16)
     parser.add_argument("--rollout-steps", type=int, default=128)
-    parser.add_argument("--updates", type=int, default=3)
-    parser.add_argument("--ppo-epochs", type=int, default=2)
-    parser.add_argument("--minibatch-size", type=int, default=64)
-    parser.add_argument("--use-amp", action="store_true", help="Use bfloat16 mixed precision training.")
+    parser.add_argument("--total-timesteps", type=int, default=512, help="SB3 model.learn budget.")
+    parser.add_argument("--n-epochs", type=int, default=4, help="SB3 PPO n_epochs.")
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--d-model", type=int, default=32)
     parser.add_argument("--n-layers", type=int, default=1)
     parser.add_argument("--backend", choices=["gru", "mamba"], default="gru")
@@ -115,106 +139,127 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--taker-fee-bps", type=float, default=0.0, help="Taker (market order) fee in bps.")
     parser.add_argument("--maker-rebate-bps", type=float, default=0.0, help="Maker (limit order) rebate in bps.")
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--lr-warmup-updates", type=int, default=0, help="Number of linear warmup updates.")
+    parser.add_argument("--lr-warmup-steps", type=int, default=0, help="Linear LR warmup timesteps.")
     parser.add_argument("--lr-schedule", choices=["constant", "linear", "cosine"], default="constant")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--clip-range", type=float, default=0.2)
+    parser.add_argument("--ent-coef", type=float, default=0.0)
+    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    parser.add_argument("--target-kl", type=float, default=None, help="Optional SB3 target_kl early stop.")
+    parser.add_argument("--norm-reward", action="store_true", help="Enable VecNormalize reward normalization.")
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--num-envs", type=int, default=1, help="Number of vectorized environments.")
+    parser.add_argument("--num-envs", type=int, default=1, help="Number of parallel environments.")
+    parser.add_argument("--no-subproc", action="store_true", help="Use DummyVecEnv (required for debugger).")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-json", type=Path, default=Path("results/ppo_smoke_metrics.json"))
-    parser.add_argument("--checkpoint-path", type=Path, default=None)
-    parser.add_argument("--checkpoint-every", type=int, default=0, help="Write checkpoint every N updates when --checkpoint-path is set.")
+    parser.add_argument("--checkpoint-path", type=Path, default=None, help="Save SB3 .zip here.")
+    parser.add_argument("--vecnorm-path", type=Path, default=None, help="Save VecNormalize stats (default: checkpoint stem + _vecnormalize.pkl).")
     parser.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases.")
     parser.add_argument("--wandb-project", default="midmamba", help="W&B project name.")
     parser.add_argument("--wandb-entity", default=None, help="W&B entity (team or user).")
     parser.add_argument("--wandb-run-name", default=None, help="W&B run name. Auto-generated if omitted.")
-    args = parser.parse_args()
-    if args.lr_warmup_updates > args.updates:
-        parser.error(f"--lr-warmup-updates ({args.lr_warmup_updates}) must be <= --updates ({args.updates})")
-    return args
+    return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    device = _sb3_device_string(args.device, backend=args.backend)
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
+    if device == "cuda" and torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else "cpu")
-    if args.device != "auto":
-        device = torch.device(args.device)
 
     output_path = args.output_json if args.output_json.is_absolute() else ROOT / args.output_json
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     loader = build_loader(args)
+    single = MidMambaExecutionEnv(
+        loader,
+        execution_steps=args.execution_steps,
+        initial_inventory=args.parent_quantity,
+        side=args.side,
+        fill_model=args.fill_model,
+        taker_fee_bps=args.taker_fee_bps,
+        maker_rebate_bps=args.maker_rebate_bps,
+    )
+    n_obs = int(single.observation_space.shape[0])
+    feature_names = (
+        execution_obs_feature_names(loader.feature_names) if args.spatial_stem else None
+    )
+    reward_kwargs = {
+        "beta_is": 1.0,
+        "beta_schedule": 0.1,
+        "beta_completion": 1.0,
+        "reward_clip": 5.0,
+        "taker_fee_bps": args.taker_fee_bps,
+        "maker_rebate_bps": args.maker_rebate_bps,
+        "terminal_penalty_bps": 100.0,
+    }
 
-    def _make_env(env_idx: int = 0):
-        env_loader = MBP10WindowLoader(
-            loader.features, loader.raw_lob,
-            feature_names=loader.feature_names,
-            seed=args.seed + env_idx,
-        )
-        return MidMambaExecutionEnv(
-            env_loader,
-            execution_steps=args.execution_steps,
-            initial_inventory=args.parent_quantity,
-            side=args.side,
-            fill_model=args.fill_model,
-            beta_is=getattr(args, "beta_is", 1.0),
-            beta_schedule=getattr(args, "beta_schedule", 1.0),
-            beta_completion=getattr(args, "beta_completion", 0.1),
-            reward_clip=getattr(args, "reward_clip", 5.0),
-            taker_fee_bps=args.taker_fee_bps,
-            maker_rebate_bps=args.maker_rebate_bps,
-        )
-
-    if args.num_envs > 1:
-        import gymnasium as gym
-        raw_env = gym.vector.SyncVectorEnv([lambda i=i: _make_env(i) for i in range(args.num_envs)])
-    else:
-        raw_env = _make_env()
-    env = VecNormalize(raw_env, norm_obs=True, norm_reward=False, gamma=args.gamma)
-
-    obs_shape = raw_env.single_observation_space.shape if args.num_envs > 1 else raw_env.observation_space.shape
-    n_features = int(obs_shape[-1])
-    agent = LOBMambaRLExecutionAgent(
-        n_features=n_features,
-        d_model=args.d_model,
-        action_dim=2,
-        action_mode="continuous",
-        n_layers=args.n_layers,
-        backend=args.backend,
-        spatial_stem=getattr(args, "spatial_stem", False),
-        dropout=args.dropout,
-    ).to(device)
-    optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
-
-    def lr_lambda(update: int) -> float:
-        # update is 0-indexed from scheduler.step()
-        if update < args.lr_warmup_updates:
-            return float(update + 1) / float(max(1, args.lr_warmup_updates))
-        if args.lr_schedule == "constant":
-            return 1.0
-        
-        # Progress from 0.0 to 1.0 after warmup
-        progress = float(update + 1 - args.lr_warmup_updates) / float(
-            max(1, args.updates - args.lr_warmup_updates)
-        )
-        if args.lr_schedule == "linear":
-            return max(0.0, 1.0 - progress)
-        if args.lr_schedule == "cosine":
-            return 0.5 * (1.0 + np.cos(np.pi * progress))
-        return 1.0
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-    print(
-        f"[ppo] device={device} backend={args.backend} obs_features={n_features} "
-        f"seq_len={args.seq_len} rollout_steps={args.rollout_steps} updates={args.updates}"
+    vec_env = build_vec_env(
+        loader,
+        n_envs=args.num_envs,
+        stack_size=args.seq_len,
+        seed=args.seed,
+        execution_steps=args.execution_steps,
+        parent_quantity=args.parent_quantity,
+        side=args.side,
+        fill_model=args.fill_model,
+        gamma=args.gamma,
+        norm_obs=True,
+        norm_reward=args.norm_reward,
+        reward_kwargs=reward_kwargs,
+        use_subproc=not args.no_subproc and args.num_envs > 1,
     )
 
-    run_config = _json_safe_config(vars(args) | {"device": str(device), "n_features": n_features, "loader_rows": loader.n_rows})
+    obs_space = stacked_observation_space(n_obs, args.seq_len)
+    policy_kwargs = midmamba_policy_kwargs(
+        observation_space=obs_space,
+        d_model=args.d_model,
+        n_layers=args.n_layers,
+        dropout=args.dropout,
+        backend=args.backend,
+        spatial_stem=args.spatial_stem,
+        feature_names=feature_names,
+        net_arch=dict(pi=[64], vf=[64]),
+    )
+
+    lr_callable = make_lr_schedule(
+        args.lr,
+        total_timesteps=args.total_timesteps,
+        warmup_timesteps=args.lr_warmup_steps,
+        schedule=args.lr_schedule,
+    )
+
+    rollout_size = args.rollout_steps * args.num_envs
+    batch_size = best_batch_size_for_rollout(rollout_size, min(args.batch_size, rollout_size))
+
+    model = make_ppo(
+        vec_env,
+        learning_rate=lr_callable,
+        n_steps=args.rollout_steps,
+        batch_size=batch_size,
+        n_epochs=args.n_epochs,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        clip_range=args.clip_range,
+        ent_coef=args.ent_coef,
+        max_grad_norm=args.max_grad_norm,
+        target_kl=args.target_kl,
+        seed=args.seed,
+        device=device,
+        policy_kwargs=policy_kwargs,
+        verbose=1,
+    )
+
+    run_config = _json_safe_config(
+        vars(args)
+        | {
+            "device": device,
+            "n_obs": n_obs,
+            "loader_rows": loader.n_rows,
+        }
+    )
 
     wandb_run = None
     if args.wandb:
@@ -227,70 +272,29 @@ def main() -> int:
             config=run_config,
         )
 
-    history: list[dict[str, float | int]] = []
-    for update in range(1, args.updates + 1):
-        lr_now = optimizer.param_groups[0]["lr"]
+    print(
+        f"[ppo] SB3 PPO device={device} backend={args.backend} n_obs={n_obs} "
+        f"seq_len={args.seq_len} rollout_steps={args.rollout_steps} "
+        f"num_envs={args.num_envs} total_timesteps={args.total_timesteps}"
+    )
 
-        batch, rollout_metrics = collect_rollout(
-            env,
-            agent,
-            rollout_steps=args.rollout_steps,
-            seq_len=args.seq_len,
-            device=device,
-            gamma=args.gamma,
-            gae_lambda=args.gae_lambda,
-        )
-        train_metrics = ppo_update(
-            agent,
-            optimizer,
-            batch,
-            epochs=args.ppo_epochs,
-            minibatch_size=args.minibatch_size,
-        )
-        scheduler.step()
-
-        row: dict[str, float | int] = {"update": update}
-        row.update(rollout_metrics)
-        row.update(train_metrics)
-        history.append(row)
-        print(
-            "[ppo] "
-            f"update={update}/{args.updates} "
-            f"lr={lr_now:.2e} "
-            f"reward_mean={row['rollout_reward_mean']:.4f} "
-            f"episodes={row['completed_episodes']:.0f} "
-            f"loss={row['loss']:.6f} "
-            f"policy={row['policy_loss']:.6f} "
-            f"value={row['value_loss']:.6f} "
-            f"entropy={row['entropy']:.6f}",
-            flush=True,
-        )
-        if wandb_run is not None:
-            wandb_run.log(row, step=update)
-        if args.checkpoint_path is not None and args.checkpoint_every > 0 and update % args.checkpoint_every == 0:
-            ckpt_path = args.checkpoint_path if args.checkpoint_path.is_absolute() else ROOT / args.checkpoint_path
-            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save({"model": agent.state_dict(), "config": run_config, "update": update}, ckpt_path)
-            print(f"[ppo] wrote checkpoint update={update} path={ckpt_path}", flush=True)
-
-    report = {
-        "config": run_config,
-        "history": history,
-    }
-    output_path.write_text(json.dumps(report, indent=2, default=str))
-    print(f"[ppo] wrote {output_path}")
+    model.learn(total_timesteps=args.total_timesteps, progress_bar=False)
 
     if args.checkpoint_path is not None:
-        ckpt_path = args.checkpoint_path if args.checkpoint_path.is_absolute() else ROOT / args.checkpoint_path
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"model": agent.state_dict(), "config": report["config"], "update": args.updates}, ckpt_path)
-        print(f"[ppo] wrote {ckpt_path}")
-        if wandb_run is not None:
-            import wandb  # type: ignore[import-untyped]
+        ckpt = args.checkpoint_path if args.checkpoint_path.is_absolute() else ROOT / args.checkpoint_path
+        vn = args.vecnorm_path
+        if vn is None:
+            vn = ckpt.with_name(ckpt.stem + "_vecnormalize.pkl")
+        elif not vn.is_absolute():
+            vn = ROOT / vn
+        save_sb3_checkpoint(model, vec_env, model_path=ckpt, vecnorm_path=vn)
+        run_config_path = ckpt.with_suffix(".run_config.json")
+        run_config_path.write_text(json.dumps(run_config, indent=2, default=str))
+        print(f"[ppo] wrote {ckpt} and {vn}")
 
-            artifact = wandb.Artifact(f"checkpoint-{wandb_run.id}", type="model")
-            artifact.add_file(str(ckpt_path))
-            wandb_run.log_artifact(artifact)
+    report = {"config": run_config, "sb3": "stable-baselines3"}
+    output_path.write_text(json.dumps(report, indent=2, default=str))
+    print(f"[ppo] wrote {output_path}")
 
     if wandb_run is not None:
         wandb_run.finish()

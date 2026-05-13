@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -41,6 +41,7 @@ class MBP10WindowLoader:
         if len(features) < 2:
             raise ValueError("at least two rows are required for an execution window")
 
+        time_index = _time_index(raw_lob)
         self.features = features
         self.raw_lob = raw_lob.reset_index(drop=True)
         self.feature_names = list(feature_names or [f"feature_{i}" for i in range(features.shape[1])])
@@ -50,13 +51,18 @@ class MBP10WindowLoader:
         self.n_rows = int(features.shape[0])
         self.rng = np.random.default_rng(seed)
 
-        # Detect session boundaries (gaps > 2h in timestamp index)
+        # Detect session boundaries (gaps > 2h) before resetting to RangeIndex.
         self._session_ends = np.array([], dtype=np.int64)
-        if isinstance(self.raw_lob.index, pd.DatetimeIndex):
-            diffs = self.raw_lob.index[1:] - self.raw_lob.index[:-1]
+        self._session_bounds: list[tuple[int, int]] = [(0, self.n_rows)]
+        if time_index is not None:
+            diffs = time_index[1:] - time_index[:-1]
             gap_mask = diffs > pd.Timedelta(hours=2)
             # session_ends[i] = last row index before each gap
             self._session_ends = np.where(gap_mask)[0]
+            if len(self._session_ends) > 0:
+                starts = [0, *[int(end) + 1 for end in self._session_ends]]
+                ends = [*[int(end) + 1 for end in self._session_ends], self.n_rows]
+                self._session_bounds = list(zip(starts, ends, strict=True))
 
         # Pre-extract book arrays to speed up environment resets
         from midmamba.env.mbp10_execution_env import _extract_book_arrays
@@ -80,7 +86,7 @@ class MBP10WindowLoader:
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
-    ) -> "MBP10WindowLoader":
+    ) -> MBP10WindowLoader:
         if (rth_start is None) != (rth_end is None):
             raise ValueError("rth_start and rth_end must be provided together")
         if rth_start is not None and rth_end is not None:
@@ -121,7 +127,7 @@ class MBP10WindowLoader:
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
-    ) -> "MBP10WindowLoader":
+    ) -> MBP10WindowLoader:
         import databento as db  # type: ignore
 
         store = db.DBNStore.from_file(str(path))
@@ -155,7 +161,7 @@ class MBP10WindowLoader:
         rth_end: str | None = None,
         seed: int | None = None,
         progress_callback: Callable[[dict[str, int]], None] | None = None,
-    ) -> "MBP10WindowLoader":
+    ) -> MBP10WindowLoader:
         return cls.from_dbn_files_chunks(
             [path],
             chunk_rows=chunk_rows,
@@ -183,7 +189,7 @@ class MBP10WindowLoader:
         rth_end: str | None = None,
         seed: int | None = None,
         progress_callback: Callable[[dict[str, int]], None] | None = None,
-    ) -> "MBP10WindowLoader":
+    ) -> MBP10WindowLoader:
         if chunk_rows <= 0:
             raise ValueError("chunk_rows must be positive")
         if min_rows < 2:
@@ -264,43 +270,50 @@ class MBP10WindowLoader:
             seed=seed,
         )
 
-    def sample_window(self, n_steps: int, *, start: int | None = None) -> tuple[np.ndarray, pd.DataFrame]:
+    def _resolve_start(self, n_steps: int, start: int | None) -> int:
         if n_steps < 2:
             raise ValueError("n_steps must be at least 2")
         if n_steps > len(self.features):
             raise ValueError(f"n_steps={n_steps} exceeds available rows={len(self.features)}")
         if start is None:
-            max_start = len(self.features) - n_steps
-            for _ in range(1000):
-                candidate = int(self.rng.integers(0, max_start + 1))
-                if not self._crosses_session_boundary(candidate, n_steps):
-                    start = candidate
-                    break
+            valid_ranges = [
+                (lo, hi - n_steps)
+                for lo, hi in self._session_bounds
+                if hi - lo >= n_steps
+            ]
+            if not valid_ranges:
+                longest_session_rows = max((hi - lo for lo, hi in self._session_bounds), default=0)
+                raise ValueError(
+                    f"no single detected session contains n_steps={n_steps}; "
+                    f"longest_session_rows={longest_session_rows}"
+                )
             else:
-                start = candidate  # fallback after 1000 attempts
+                counts = np.asarray([hi - lo + 1 for lo, hi in valid_ranges], dtype=np.int64)
+                draw = int(self.rng.integers(0, int(counts.sum())))
+                for (lo, _hi), count in zip(valid_ranges, counts, strict=True):
+                    if draw < count:
+                        start = lo + draw
+                        break
+                    draw -= int(count)
         if start < 0 or start + n_steps > len(self.features):
             raise ValueError("window start is out of bounds")
+        if self._crosses_session_boundary(start, n_steps):
+            raise ValueError("window crosses a detected session boundary")
+        return start
+
+    def resolve_start(self, n_steps: int, start: int | None = None) -> int:
+        """Resolve a random or explicit start row without crossing session gaps."""
+        return self._resolve_start(n_steps, start)
+
+    def sample_window(self, n_steps: int, *, start: int | None = None) -> tuple[np.ndarray, pd.DataFrame]:
+        start = self._resolve_start(n_steps, start)
         end = start + n_steps
         return self.features[start:end].copy(), self.raw_lob.iloc[start:end].copy()
 
     def sample_window_arrays(
         self, n_steps: int, *, start: int | None = None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        if n_steps < 2:
-            raise ValueError("n_steps must be at least 2")
-        if n_steps > len(self.features):
-            raise ValueError(f"n_steps={n_steps} exceeds available rows={len(self.features)}")
-        if start is None:
-            max_start = len(self.features) - n_steps
-            for _ in range(1000):
-                candidate = int(self.rng.integers(0, max_start + 1))
-                if not self._crosses_session_boundary(candidate, n_steps):
-                    start = candidate
-                    break
-            else:
-                start = candidate  # fallback after 1000 attempts
-        if start < 0 or start + n_steps > len(self.features):
-            raise ValueError("window start is out of bounds")
+        start = self._resolve_start(n_steps, start)
         end = start + n_steps
         return (
             self.features[start:end].copy(),
@@ -332,3 +345,12 @@ def _event_time_frame(df: pd.DataFrame) -> pd.DataFrame:
         out["ts_recv"] = pd.to_datetime(out.index, utc=True)
     out.index = pd.DatetimeIndex(pd.to_datetime(out["ts_event"], utc=True), name="ts_event")
     return out.sort_index(kind="stable")
+
+
+def _time_index(raw_lob: pd.DataFrame) -> pd.DatetimeIndex | None:
+    if isinstance(raw_lob.index, pd.DatetimeIndex):
+        return pd.DatetimeIndex(raw_lob.index)
+    for col in ("ts_event", "ts_recv"):
+        if col in raw_lob.columns:
+            return pd.DatetimeIndex(pd.to_datetime(raw_lob[col], utc=True))
+    return None

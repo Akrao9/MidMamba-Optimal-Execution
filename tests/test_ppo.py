@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import torch
+import pytest
 
 from midmamba.data import MBP10WindowLoader
 from midmamba.env import MidMambaExecutionEnv
-from midmamba.models import LOBMambaRLExecutionAgent
-from midmamba.rl import collect_rollout, compute_gae, ppo_update, sample_squashed_normal
+from midmamba.ppo_rollout import best_batch_size_for_rollout
 
 
 def _book(n: int = 128) -> pd.DataFrame:
@@ -28,117 +27,168 @@ def _book(n: int = 128) -> pd.DataFrame:
     return pd.DataFrame(data, index=idx)
 
 
-def _agent(n_features: int) -> LOBMambaRLExecutionAgent:
-    return LOBMambaRLExecutionAgent(
-        n_features=n_features,
+@pytest.mark.parametrize("schedule", ["constant", "linear", "cosine"])
+def test_lr_schedule_callable(schedule: str) -> None:
+    pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
+    from midmamba.rl import make_lr_schedule
+
+    fn = make_lr_schedule(1e-3, total_timesteps=1000, warmup_timesteps=100, schedule=schedule)
+    assert fn(1.0) > 0
+    assert np.isfinite(fn(0.01))
+
+
+def test_best_batch_size_divides_rollout() -> None:
+    assert best_batch_size_for_rollout(256, 256) == 256
+    assert best_batch_size_for_rollout(256, 200) == 128
+    assert best_batch_size_for_rollout(200, 300) == 200
+    rs = 128 * 3
+    bs = best_batch_size_for_rollout(rs, 200)
+    assert rs % bs == 0
+
+
+def test_sb3_rollout_logger_callback_can_instantiate() -> None:
+    pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
+    from midmamba.rl import SB3RolloutLoggerCallback
+
+    callback = SB3RolloutLoggerCallback()
+
+    assert callback._on_step() is True
+
+
+def test_sb3_autocast_policy_short_learn_smoke() -> None:
+    pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
+    from midmamba.rl import (
+        AutocastActorCriticPolicy,
+        build_vec_env,
+        make_ppo,
+        midmamba_policy_kwargs,
+        stacked_observation_space,
+    )
+
+    loader = MBP10WindowLoader.from_book(_book(64), seed=11)
+    seq_len = 2
+    n_steps = 4
+    single = MidMambaExecutionEnv(loader, execution_steps=4, initial_inventory=100.0)
+    n_obs = int(single.observation_space.shape[0])
+    vec_env = build_vec_env(
+        loader,
+        n_envs=1,
+        stack_size=seq_len,
+        seed=0,
+        execution_steps=4,
+        parent_quantity=100.0,
+        side="buy",
+        fill_model="proportional",
+        gamma=0.99,
+        norm_obs=True,
+        norm_reward=False,
+        use_subproc=False,
+    )
+    policy_kwargs = midmamba_policy_kwargs(
+        observation_space=stacked_observation_space(n_obs, seq_len),
         d_model=8,
-        action_dim=2,
-        action_mode="continuous",
         n_layers=1,
+        dropout=0.0,
         backend="gru",
         spatial_stem=False,
-        dropout=0.0,
+        feature_names=None,
+        net_arch=dict(pi=[16], vf=[16]),
+        autocast_enabled=True,
+        autocast_device_type="cpu",
+        autocast_dtype="bfloat16",
+    )
+    model = make_ppo(
+        vec_env,
+        policy=AutocastActorCriticPolicy,
+        learning_rate=3e-4,
+        n_steps=n_steps,
+        batch_size=n_steps,
+        n_epochs=1,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+        max_grad_norm=0.5,
+        target_kl=None,
+        seed=0,
+        device="cpu",
+        policy_kwargs=policy_kwargs,
+        verbose=0,
     )
 
+    model.learn(total_timesteps=n_steps)
 
-def test_compute_gae_resets_at_terminal_steps() -> None:
-    rewards = torch.tensor([1.0, 1.0, 1.0])
-    values = torch.tensor([0.5, 0.5, 0.5])
-    terminateds = torch.tensor([0.0, 1.0, 0.0])
-
-    advantages, returns = compute_gae(rewards, values, terminateds, torch.tensor(0.5), gamma=1.0, gae_lambda=1.0)
-
-    assert torch.allclose(advantages, torch.tensor([1.5, 0.5, 1.0]))
-    assert torch.allclose(returns, torch.tensor([2.0, 1.0, 1.5]))
+    obs = vec_env.reset()
+    if isinstance(obs, tuple):
+        obs = obs[0]
+    act, _ = model.predict(obs, deterministic=True)
+    assert act.dtype == np.float32
+    assert np.isfinite(act).all()
 
 
-def test_compute_gae_truncated_bootstraps_differently_than_terminated() -> None:
-    """Truncated episodes should bootstrap next-state value; terminated should not."""
-    rewards = torch.tensor([1.0, 1.0])
-    values = torch.tensor([0.5, 0.5])
-    last_value = torch.tensor(2.0)
-
-    terminated = torch.tensor([0.0, 1.0])
-    adv_term, _ = compute_gae(rewards, values, terminated, last_value, gamma=1.0, gae_lambda=1.0)
-
-    not_terminated = torch.tensor([0.0, 0.0])
-    adv_trunc, _ = compute_gae(rewards, values, not_terminated, last_value, gamma=1.0, gae_lambda=1.0)
-
-    assert not torch.allclose(adv_term, adv_trunc), (
-        "terminated vs truncated GAE should differ when last_value != 0"
-    )
-    assert adv_trunc[1] > adv_term[1], (
-        "truncated step should have higher advantage due to bootstrapped value"
+def test_sb3_ppo_short_learn_smoke() -> None:
+    pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
+    from midmamba.rl import (
+        build_vec_env,
+        make_ppo,
+        midmamba_policy_kwargs,
+        stacked_observation_space,
     )
 
-
-def test_squashed_normal_actions_are_bounded_and_finite() -> None:
-    agent = _agent(6)
-    obs = torch.zeros(4, 5, 6)
-
-    actions, log_probs, values = sample_squashed_normal(agent, obs)
-
-    assert actions.shape == (4, 2)
-    assert log_probs.shape == (4,)
-    assert values.shape == (4,)
-    assert torch.all(actions <= 1.0)
-    assert torch.all(actions >= -1.0)
-    assert torch.isfinite(log_probs).all()
-    assert torch.isfinite(values).all()
-
-
-def test_collect_rollout_with_truncation_bootstraps_reward() -> None:
-    """Verify that truncated episodes have their final reward boosted by gamma * V(s')."""
     loader = MBP10WindowLoader.from_book(_book(), seed=42)
-    # Force truncation at step 4
-    execution_steps = 4
-    env = MidMambaExecutionEnv(
-        loader, execution_steps=execution_steps, initial_inventory=1e9, side="buy",
+    seq_len = 4
+    n_envs = 2
+    n_steps = 16
+    single = MidMambaExecutionEnv(loader, execution_steps=8, initial_inventory=100.0)
+    n_obs = int(single.observation_space.shape[0])
+    vec_env = build_vec_env(
+        loader,
+        n_envs=n_envs,
+        stack_size=seq_len,
+        seed=0,
+        execution_steps=8,
+        parent_quantity=100.0,
+        side="buy",
+        fill_model="proportional",
+        gamma=0.99,
+        norm_obs=True,
+        norm_reward=False,
+        use_subproc=False,
     )
-    agent = _agent(env.observation_space.shape[0])
-    # Mock agent to return a predictable value for the bootstrap
-    with torch.no_grad():
-        # Get baseline reward for one step
-        obs, _ = env.reset()
-        obs_seq = torch.as_tensor(np.expand_dims(np.zeros((2, obs.shape[0])), 0), dtype=torch.float32)
-        _, _, value = sample_squashed_normal(agent, obs_seq)
-        bootstrap_val = value.item()
-
-    # Collect rollout with length that hits truncation
-    rollout_steps = 8
-    batch, metrics = collect_rollout(env, agent, rollout_steps=rollout_steps, seq_len=2, device="cpu", gamma=0.9)
-
-    # In a rollout of 8 steps with environment max_steps=4:
-    # steps 0, 1, 2, 3 (truncated=True)
-    # The reward at index 3 should be: env_reward + gamma * bootstrap_value
-    # Since it's a single env, we can check index 3
-    # We also check index 7 if it happens to be truncated there too
-    
-    # We can't easily know the exact env_reward without re-running, 
-    # but we can verify that the reward in the buffer is DIFFERENT from the raw env reward if we intercepted it.
-    # Alternatively, verify that terminateds_buffer[3] is 1.0 (it was forced in code)
-    # Truncation is now encoded separately from termination. On step
-    # execution_steps-1 the env truncates (not terminates), so truncateds=1
-    # and terminateds=0 at the boundary.
-    assert batch.truncateds[execution_steps - 1] == 1.0
-    assert batch.truncateds[execution_steps * 2 - 1] == 1.0
-    assert batch.terminateds[execution_steps - 1] == 0.0
-
-    # Verify rewards are finite
-    assert torch.isfinite(batch.rewards).all()
-    assert metrics["completed_episodes"] >= 1
-
-
-def test_collect_rollout_and_ppo_update_are_finite() -> None:
-    loader = MBP10WindowLoader.from_book(_book(), seed=1)
-    env = MidMambaExecutionEnv(loader, execution_steps=8, initial_inventory=100.0)
-    agent = _agent(env.observation_space.shape[0])
-    optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
-
-    batch, rollout_metrics = collect_rollout(env, agent, rollout_steps=12, seq_len=4, device="cpu")
-    update_metrics = ppo_update(agent, optimizer, batch, epochs=1, minibatch_size=4)
-
-    assert batch.obs.shape == (12, 4, env.observation_space.shape[0])
-    assert batch.actions.shape == (12, 2)
-    assert rollout_metrics["completed_episodes"] >= 1
-    assert all(np.isfinite(v) for v in update_metrics.values())
+    obs_space = stacked_observation_space(n_obs, seq_len)
+    policy_kwargs = midmamba_policy_kwargs(
+        observation_space=obs_space,
+        d_model=16,
+        n_layers=1,
+        dropout=0.0,
+        backend="gru",
+        spatial_stem=False,
+        feature_names=None,
+        net_arch=dict(pi=[32], vf=[32]),
+    )
+    buf = n_steps * n_envs
+    batch_size = best_batch_size_for_rollout(buf, min(32, buf))
+    model = make_ppo(
+        vec_env,
+        learning_rate=3e-4,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=2,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+        max_grad_norm=0.5,
+        target_kl=None,
+        seed=0,
+        device="cpu",
+        policy_kwargs=policy_kwargs,
+        verbose=0,
+    )
+    model.learn(total_timesteps=buf * 2)
+    obs = vec_env.reset()
+    if isinstance(obs, tuple):
+        obs = obs[0]
+    act, _ = model.predict(obs, deterministic=True)
+    assert act.shape[0] == n_envs
+    assert np.isfinite(act).all()

@@ -138,6 +138,9 @@ class _FixedWindowLoader:
     """
 
     def __init__(self, prepared: pd.DataFrame) -> None:
+        if len(prepared) < 2:
+            raise ValueError("_FixedWindowLoader requires at least 2 rows")
+        prepared = _ensure_time_index(prepared)
         feature_frame = build_feature_frame(prepared)
         feature_frame = feature_frame.replace([np.inf, -np.inf], np.nan).fillna(0.0)
         self.features = feature_frame.to_numpy(dtype=np.float32, copy=True)
@@ -149,6 +152,10 @@ class _FixedWindowLoader:
     def sample_window_arrays(
         self, n_steps: int
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if n_steps > len(self.features):
+            raise ValueError(
+                f"n_steps={n_steps} exceeds available rows={len(self.features)}"
+            )
         return (
             self.features[:n_steps].copy(),
             self._bid_px[:n_steps].copy(),
@@ -180,7 +187,7 @@ def run_almgren_chriss_execution(
     )
 
     prepared = add_market_fields(book) if "mid" not in book.columns or "spread" not in book.columns else book.copy()
-    prepared = drop_invalid_rows(prepared).sort_index(kind="stable").reset_index(drop=True)
+    prepared = drop_invalid_rows(prepared).sort_index(kind="stable")
     if len(prepared) < 2:
         raise ValueError("book must contain at least two valid MBP-10 rows")
 
@@ -202,13 +209,13 @@ def run_almgren_chriss_execution(
     info: dict[str, Any] = {}
 
     slices = schedule[:execution_steps]
-    for i, child_qty in enumerate(slices):
-        if i == len(slices) - 1:
-            size_action = 1.0  # request full remaining on last slice
-        else:
-            # Env maps action[0] → rate = (action[0]+1)/max_steps, target = rate * initial_inv
-            # To request child_qty: action[0] = child_qty * max_steps / parent_quantity - 1
-            size_action = float(np.clip(child_qty * execution_steps / parent_quantity - 1.0, -1.0, 1.0))
+    cumulative = np.cumsum(slices)
+    for i, _child_qty in enumerate(slices):
+        twap_next_frac = (i + 1) / execution_steps
+        desired_cum_frac = float(cumulative[i] / parent_quantity)
+        # Env maps action[0] to cumulative target:
+        # target_cum_frac = twap_next_frac * (action[0] + 1).
+        size_action = float(np.clip(desired_cum_frac / max(twap_next_frac, 1e-9) - 1.0, -1.0, 1.0))
         action = np.array([size_action, 1.0], dtype=np.float32)
 
         _, reward, terminated, truncated, info = env.step(action)
@@ -233,3 +240,14 @@ def _result(name: str, total_reward: float, steps: int, info: dict[str, Any]) ->
         cash=float(info["cash"]),
         terminal_penalty_bps=float(info.get("terminal_penalty_bps", 0.0)),
     )
+
+
+def _ensure_time_index(frame: pd.DataFrame) -> pd.DataFrame:
+    if isinstance(frame.index, pd.DatetimeIndex):
+        return frame
+    for col in ("ts_event", "ts_recv"):
+        if col in frame.columns:
+            out = frame.copy()
+            out.index = pd.DatetimeIndex(pd.to_datetime(out[col], utc=True), name=col)
+            return out
+    return frame

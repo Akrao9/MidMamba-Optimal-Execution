@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
-import random
 import sys
+from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -50,6 +51,9 @@ def main() -> int:
     dbn_file = args.dbn_file or _default_dbn(ROOT)
     if dbn_file is None:
         print("No .dbn.zst files found under data/. Pass --dbn-file explicitly.", file=sys.stderr)
+        return 1
+    if not dbn_file.is_file():
+        print(f"DBN file does not exist: {dbn_file}", file=sys.stderr)
         return 1
 
     output_path = args.output_json
@@ -108,7 +112,11 @@ def main() -> int:
         return 1
 
     max_start = loader.n_rows - args.window_steps
-    start = random.Random(args.seed).randint(0, max_start) if args.random_start else args.start
+    if args.random_start:
+        loader.rng = np.random.default_rng(args.seed)
+        start = loader.resolve_start(args.window_steps, None)
+    else:
+        start = loader.resolve_start(args.window_steps, args.start)
     if start < 0 or start > max_start:
         print(f"Start row {start} is out of bounds after filters. Valid range: 0..{max_start}.", file=sys.stderr)
         return 1

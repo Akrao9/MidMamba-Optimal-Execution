@@ -162,6 +162,39 @@ class _WindowLoader:
         return self.features, self.raw_lob
 
 
+class _ExecutionArrayLoader:
+    def __init__(
+        self,
+        features: np.ndarray,
+        raw_lob: pd.DataFrame,
+        passive_buy_flow: np.ndarray,
+        passive_sell_flow: np.ndarray,
+    ) -> None:
+        self.features = features.astype(np.float32)
+        self.raw_lob = raw_lob
+        self.n_features = int(features.shape[1])
+        self.passive_buy_flow = passive_buy_flow.astype(np.float64)
+        self.passive_sell_flow = passive_sell_flow.astype(np.float64)
+
+    def sample_execution_window_arrays(self, n_steps: int):
+        assert n_steps == len(self.features)
+        bid_px = self.raw_lob[[f"bid_px_{i:02d}" for i in range(10)]].to_numpy(dtype=np.float64)
+        ask_px = self.raw_lob[[f"ask_px_{i:02d}" for i in range(10)]].to_numpy(dtype=np.float64)
+        bid_sz = self.raw_lob[[f"bid_sz_{i:02d}" for i in range(10)]].to_numpy(dtype=np.float64)
+        ask_sz = self.raw_lob[[f"ask_sz_{i:02d}" for i in range(10)]].to_numpy(dtype=np.float64)
+        mid = (bid_px[:, 0] + ask_px[:, 0]) / 2.0
+        return (
+            self.features,
+            bid_px,
+            ask_px,
+            bid_sz,
+            ask_sz,
+            mid,
+            self.passive_buy_flow,
+            self.passive_sell_flow,
+        )
+
+
 def test_midmamba_execution_env_matches_continuous_skeleton_contract() -> None:
     features = np.arange(12, dtype=np.float32).reshape(3, 4)
     loader = _WindowLoader(features, _book(3))
@@ -232,6 +265,23 @@ def test_midmamba_execution_env_passive_action_uses_queue_depletion() -> None:
     assert info["avg_exec_price"] == pytest.approx(100.0)
     assert info["inventory"] == pytest.approx(80.0, rel=1e-2)
     assert reward > 0.0
+
+
+def test_midmamba_execution_env_uses_precomputed_passive_flow_arrays() -> None:
+    features = np.zeros((2, 2), dtype=np.float32)
+    loader = _ExecutionArrayLoader(
+        features,
+        _book(2),
+        passive_buy_flow=np.array([80.0, 0.0]),
+        passive_sell_flow=np.zeros(2),
+    )
+    env = MidMambaExecutionEnv(loader, execution_steps=2, initial_inventory=100.0, fill_model="proportional")
+    env.reset()
+
+    _, _reward, _terminated, _truncated, info = env.step(np.array([1.0, -1.0], dtype=np.float32))
+
+    assert info["is_passive"] == 1
+    assert info["executed_shares"] == pytest.approx(40.0)
 
 
 # ── Multi-objective reward tests ──────────────────────────────────────────

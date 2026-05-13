@@ -142,6 +142,7 @@ def _load_window(args: argparse.Namespace) -> tuple[MBP10WindowLoader, np.ndarra
         raise FileNotFoundError(f"no DBN files matched {args.dbn_glob!r}")
     kwargs = {
         "resample_freq": args.resample_freq,
+        "snapshot_backend": args.snapshot_backend,
         "rth_start": args.rth_start if args.rth_only else None,
         "rth_end": args.rth_end if args.rth_only else None,
         "seed": args.seed,
@@ -206,6 +207,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rth-end", default="16:00:00")
     parser.add_argument("--window-steps", type=int, default=2_000)
     parser.add_argument("--resample-freq", default=None, help="Optional fixed-cadence resampling freq, e.g. '100ms' or '1s'.")
+    parser.add_argument(
+        "--snapshot-backend",
+        choices=["pandas", "pykx"],
+        default="pandas",
+        help="Backend for fixed-cadence LOB snapshots. PyKX requires a kdb+ license.",
+    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--random-start", action="store_true")
     parser.add_argument("--execution-steps", type=int, default=60)

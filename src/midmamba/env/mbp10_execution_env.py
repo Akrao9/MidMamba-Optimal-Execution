@@ -105,6 +105,22 @@ def _passive_touch_fill_np(
         else:
             flow = 0.0
 
+    return _passive_touch_fill_from_flow_np(price, visible_qty, flow, qty, fill_model)
+
+
+def _passive_touch_fill_from_flow_np(
+    price: float,
+    visible_qty: float,
+    flow: float,
+    quantity: float,
+    fill_model: FillModel,
+) -> FillResult:
+    qty = max(float(quantity), 0.0)
+    if qty <= 0:
+        return FillResult(0.0, 0.0, 0.0, 0.0, 0)
+    price = float(price)
+    visible_qty = max(float(visible_qty), 0.0)
+    flow = max(float(flow), 0.0)
     if flow <= 0:
         return FillResult(0.0, qty, 0.0, 0.0, 0)
 
@@ -123,6 +139,41 @@ def _passive_touch_fill_np(
         avg_price=price if filled > 0 else 0.0,
         levels_touched=1 if filled > 0 else 0,
     )
+
+
+def _passive_touch_flows_np(
+    bid_px: np.ndarray,
+    bid_sz: np.ndarray,
+    ask_px: np.ndarray,
+    ask_sz: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Precompute top-of-book passive buy/sell queue-depletion flow per row."""
+    n = int(len(bid_px))
+    buy_flow = np.zeros(n, dtype=np.float64)
+    sell_flow = np.zeros(n, dtype=np.float64)
+    if n < 2:
+        return buy_flow, sell_flow
+
+    bid0 = np.asarray(bid_px, dtype=np.float64)[:, 0]
+    ask0 = np.asarray(ask_px, dtype=np.float64)[:, 0]
+    bid_sz0 = np.clip(np.nan_to_num(np.asarray(bid_sz, dtype=np.float64)[:, 0], nan=0.0), 0.0, None)
+    ask_sz0 = np.clip(np.nan_to_num(np.asarray(ask_sz, dtype=np.float64)[:, 0], nan=0.0), 0.0, None)
+
+    bid_down = bid0[1:] < bid0[:-1]
+    bid_same = bid0[1:] == bid0[:-1]
+    ask_up = ask0[1:] > ask0[:-1]
+    ask_same = ask0[1:] == ask0[:-1]
+    buy_flow[:-1] = np.where(
+        bid_down,
+        bid_sz0[:-1],
+        np.where(bid_same, np.maximum(bid_sz0[:-1] - bid_sz0[1:], 0.0), 0.0),
+    )
+    sell_flow[:-1] = np.where(
+        ask_up,
+        ask_sz0[:-1],
+        np.where(ask_same, np.maximum(ask_sz0[:-1] - ask_sz0[1:], 0.0), 0.0),
+    )
+    return buy_flow, sell_flow
 
 
 def _visible_levels(row: pd.Series, side: Side) -> tuple[np.ndarray, np.ndarray]:
@@ -534,6 +585,8 @@ class MidMambaExecutionEnv(gym.Env):
         self._bid_sz = np.zeros((self.max_steps, _N_LEVELS), dtype=np.float64)
         self._ask_sz = np.zeros((self.max_steps, _N_LEVELS), dtype=np.float64)
         self._mid = np.zeros(self.max_steps, dtype=np.float64)
+        self._passive_buy_flow = np.zeros(self.max_steps, dtype=np.float64)
+        self._passive_sell_flow = np.zeros(self.max_steps, dtype=np.float64)
         self.current_step = 0
         self.inventory = self.initial_inventory
         self.arrival_price = 0.0
@@ -561,7 +614,26 @@ class MidMambaExecutionEnv(gym.Env):
         if self.initial_inventory <= 0:
             raise ValueError("initial_inventory must be positive")
 
-        if hasattr(self.dataloader, "sample_window_arrays"):
+        if hasattr(self.dataloader, "sample_execution_window_arrays"):
+            (
+                features,
+                bid_px,
+                ask_px,
+                bid_sz,
+                ask_sz,
+                mid,
+                passive_buy_flow,
+                passive_sell_flow,
+            ) = self.dataloader.sample_execution_window_arrays(self.max_steps)
+            self.current_window_features = features
+            self._bid_px = bid_px
+            self._ask_px = ask_px
+            self._bid_sz = bid_sz
+            self._ask_sz = ask_sz
+            self._mid = mid
+            self._passive_buy_flow = passive_buy_flow
+            self._passive_sell_flow = passive_sell_flow
+        elif hasattr(self.dataloader, "sample_window_arrays"):
             features, bid_px, ask_px, bid_sz, ask_sz, mid = self.dataloader.sample_window_arrays(self.max_steps)
             self.current_window_features = features
             self._bid_px = bid_px
@@ -569,6 +641,7 @@ class MidMambaExecutionEnv(gym.Env):
             self._bid_sz = bid_sz
             self._ask_sz = ask_sz
             self._mid = mid
+            self._passive_buy_flow, self._passive_sell_flow = _passive_touch_flows_np(bid_px, bid_sz, ask_px, ask_sz)
         else:
             features, raw_lob = self.dataloader.sample_window(self.max_steps)
             features_arr = np.asarray(features, dtype=np.float32)
@@ -585,6 +658,7 @@ class MidMambaExecutionEnv(gym.Env):
             self._bid_sz = bid_sz
             self._ask_sz = ask_sz
             self._mid = mid
+            self._passive_buy_flow, self._passive_sell_flow = _passive_touch_flows_np(bid_px, bid_sz, ask_px, ask_sz)
 
         self.current_step = 0
         self.inventory = self.initial_inventory
@@ -628,13 +702,22 @@ class MidMambaExecutionEnv(gym.Env):
         if target_qty > 0:
             if aggressiveness < 0.0 and not is_last_step:
                 is_passive = True
-                fill = _passive_touch_fill_np(
-                    self._bid_px[t, 0], self._bid_sz[t, 0],
-                    self._bid_px[t + 1, 0], self._bid_sz[t + 1, 0],
-                    self._ask_px[t, 0], self._ask_sz[t, 0],
-                    self._ask_px[t + 1, 0], self._ask_sz[t + 1, 0],
-                    self.side, target_qty, self.active_fill_model,
-                )
+                if self.side == "buy":
+                    fill = _passive_touch_fill_from_flow_np(
+                        self._bid_px[t, 0],
+                        self._bid_sz[t, 0],
+                        self._passive_buy_flow[t],
+                        target_qty,
+                        self.active_fill_model,
+                    )
+                else:
+                    fill = _passive_touch_fill_from_flow_np(
+                        self._ask_px[t, 0],
+                        self._ask_sz[t, 0],
+                        self._passive_sell_flow[t],
+                        target_qty,
+                        self.active_fill_model,
+                    )
             else:
                 scaled = 1.0 if is_last_step else max(0.0, aggressiveness)
                 max_levels = max(1, int(np.ceil(scaled * 10.0)))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from midmamba.data.mbp10_features import (
     add_market_fields,
@@ -9,6 +10,7 @@ from midmamba.data.mbp10_features import (
     book_integrity_report,
     build_feature_frame,
     drop_invalid_rows,
+    resample_book,
 )
 
 
@@ -73,6 +75,29 @@ def test_apply_rth_filter_accepts_naive_utc_index() -> None:
 
     assert len(filtered) == 1
     assert filtered.index[0] == pd.Timestamp("2025-10-01 13:30:00")
+
+
+def test_resample_book_pandas_backend_forward_fills_snapshot_grid() -> None:
+    df = add_market_fields(_sample_mbp10_frame(3))
+    df.index = pd.DatetimeIndex(
+        [
+            "2025-10-01 13:30:00+00:00",
+            "2025-10-01 13:30:02+00:00",
+            "2025-10-01 13:30:05+00:00",
+        ],
+        name="ts_recv",
+    )
+
+    out = resample_book(df, "1s", backend="pandas")
+
+    assert len(out) == 6
+    assert out.index[3] == pd.Timestamp("2025-10-01 13:30:03+00:00")
+    assert out.iloc[3]["bid_sz_00"] == out.iloc[2]["bid_sz_00"]
+
+
+def test_resample_book_reports_unknown_backend() -> None:
+    with pytest.raises(ValueError, match="snapshot backend"):
+        resample_book(_sample_mbp10_frame(), "1s", backend="duckdb")  # type: ignore[arg-type]
 
 
 def test_drop_invalid_rows_and_book_integrity_report() -> None:

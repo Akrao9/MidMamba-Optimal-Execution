@@ -61,6 +61,7 @@ def build_loader(args: argparse.Namespace) -> MBP10WindowLoader:
         return MBP10WindowLoader.from_book(
             synthetic_book(args.synthetic_rows, seed=args.seed),
             resample_freq=args.resample_freq,
+            snapshot_backend=args.snapshot_backend,
             seed=args.seed,
         )
 
@@ -75,6 +76,7 @@ def build_loader(args: argparse.Namespace) -> MBP10WindowLoader:
             dbn_paths[0],
             sample_rows=args.sample_rows,
             resample_freq=args.resample_freq,
+            snapshot_backend=args.snapshot_backend,
             rth_start=args.rth_start if args.rth_only else None,
             rth_end=args.rth_end if args.rth_only else None,
             seed=args.seed,
@@ -96,6 +98,7 @@ def build_loader(args: argparse.Namespace) -> MBP10WindowLoader:
         min_rows=args.loader_rows or max(args.execution_steps, args.window_steps),
         max_chunks=args.max_chunks,
         resample_freq=args.resample_freq,
+        snapshot_backend=args.snapshot_backend,
         rth_start=args.rth_start if args.rth_only else None,
         rth_end=args.rth_end if args.rth_only else None,
         seed=args.seed,
@@ -116,6 +119,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rth-end", default="16:00:00")
     parser.add_argument("--synthetic-rows", type=int, default=5_000)
     parser.add_argument("--resample-freq", default=None, help="Optional fixed-cadence resampling freq, e.g. '100ms' or '1s'.")
+    parser.add_argument(
+        "--snapshot-backend",
+        choices=["pandas", "pykx"],
+        default="pandas",
+        help="Backend for fixed-cadence LOB snapshots. PyKX requires a kdb+ license.",
+    )
     parser.add_argument("--execution-steps", type=int, default=60)
     parser.add_argument("--window-steps", type=int, default=1_000, help="Minimum real-data rows to load in chunked mode.")
     parser.add_argument("--parent-quantity", type=float, default=1_000.0)

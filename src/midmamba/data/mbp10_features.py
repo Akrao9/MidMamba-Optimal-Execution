@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import pandas as pd
+
+SnapshotBackend = Literal["pandas", "pykx"]
 
 
 def level_cols(prefix: str) -> list[str]:
@@ -59,13 +63,17 @@ def drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def resample_book(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+def resample_book(df: pd.DataFrame, freq: str, *, backend: SnapshotBackend = "pandas") -> pd.DataFrame:
     """Resample an MBP-10 DataFrame to a fixed frequency using last-value sampling.
 
     For each fixed-frequency bucket, takes the last observed book state.
     Gaps are forward-filled so every bar carries a valid LOB snapshot.
     Handles duplicate timestamps (common in raw tick data) naturally.
     """
+    if backend == "pykx":
+        return resample_book_pykx(df, freq)
+    if backend != "pandas":
+        raise ValueError("snapshot backend must be 'pandas' or 'pykx'")
     if df.empty:
         return df
     df = df.copy()
@@ -73,6 +81,49 @@ def resample_book(df: pd.DataFrame, freq: str) -> pd.DataFrame:
         df.index = pd.to_datetime(df.index, utc=True)
 
     return df.resample(freq).last().ffill().dropna(how="all")
+
+
+def resample_book_pykx(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """Resample with embedded kdb+ via PyKX, returning Pandas-parity bars.
+
+    PyKX is optional and licensed separately by KX. This backend is intended for
+    offline preprocessing/benchmarking, not for per-step environment calls.
+    """
+    try:
+        import pykx as kx  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError("Install PyKX and configure a kdb+ license to use snapshot_backend='pykx'.") from exc
+
+    if df.empty:
+        return df
+
+    freq_ns = int(pd.Timedelta(freq).value)
+    if freq_ns <= 0:
+        raise ValueError("resample freq must be positive")
+
+    out_index_name = df.index.name
+    work = df.copy()
+    index = pd.DatetimeIndex(pd.to_datetime(work.index, utc=True))
+    ns_col = "midmamba_ts_recv_ns"
+    work[ns_col] = index.asi8.astype(np.int64)
+    q_table = kx.toq(work.reset_index(drop=True))
+    kx.q["midmamba_quote_data"] = q_table
+
+    data_cols = [str(col) for col in work.columns if str(col) != ns_col]
+    select_expr = ", ".join(f"{col}:last {col}" for col in data_cols)
+    query = (
+        f"select {select_expr} by {ns_col}:{freq_ns} xbar {ns_col} "
+        "from midmamba_quote_data"
+    )
+    bars = kx.q(query).pd()
+    if bars.empty:
+        return bars
+
+    bucket_ns = pd.to_numeric(bars.pop(ns_col)).astype(np.int64)
+    bars.index = pd.DatetimeIndex(pd.to_datetime(bucket_ns, utc=True), name=out_index_name)
+    bars = bars.sort_index(kind="stable")
+    full_index = pd.date_range(bars.index[0], bars.index[-1], freq=freq, tz="UTC", name=out_index_name)
+    return bars.reindex(full_index).ffill().dropna(how="all")
 
 
 def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:

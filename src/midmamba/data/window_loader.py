@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from midmamba.data.mbp10_features import (
+    SnapshotBackend,
     add_market_fields,
     apply_rth_filter,
     build_feature_frame,
@@ -23,6 +24,7 @@ class MBP10WindowLoader:
     - ``n_features``
     - ``sample_window(n_steps) -> (features, raw_lob)``
     - ``sample_window_arrays(n_steps) -> (features, bid_px, ask_px, bid_sz, ask_sz, mid)``
+    - ``sample_execution_window_arrays(...)`` also includes passive flow arrays
     """
 
     def __init__(
@@ -65,8 +67,14 @@ class MBP10WindowLoader:
                 self._session_bounds = list(zip(starts, ends, strict=True))
 
         # Pre-extract book arrays to speed up environment resets
-        from midmamba.env.mbp10_execution_env import _extract_book_arrays
+        from midmamba.env.mbp10_execution_env import _extract_book_arrays, _passive_touch_flows_np
         self._bid_px, self._ask_px, self._bid_sz, self._ask_sz, self._mid = _extract_book_arrays(self.raw_lob)
+        self._passive_buy_flow, self._passive_sell_flow = _passive_touch_flows_np(
+            self._bid_px,
+            self._bid_sz,
+            self._ask_px,
+            self._ask_sz,
+        )
 
     def _crosses_session_boundary(self, start: int, n_steps: int) -> bool:
         """Return True if window [start, start+n_steps) spans an overnight gap."""
@@ -83,6 +91,7 @@ class MBP10WindowLoader:
         *,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
+        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -102,7 +111,7 @@ class MBP10WindowLoader:
         prepared = drop_invalid_rows(prepared).sort_index(kind="stable")
 
         if resample_freq is not None:
-            prepared = resample_book(prepared, resample_freq)
+            prepared = resample_book(prepared, resample_freq, backend=snapshot_backend)
 
         if len(prepared) < 2:
             raise ValueError("book must contain at least two valid MBP-10 rows")
@@ -124,6 +133,7 @@ class MBP10WindowLoader:
         sample_rows: int | None = None,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
+        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -142,6 +152,7 @@ class MBP10WindowLoader:
             _event_time_frame(df),
             feature_columns=feature_columns,
             resample_freq=resample_freq,
+            snapshot_backend=snapshot_backend,
             rth_start=rth_start,
             rth_end=rth_end,
             seed=seed,
@@ -157,6 +168,7 @@ class MBP10WindowLoader:
         max_chunks: int | None = None,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
+        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -169,6 +181,7 @@ class MBP10WindowLoader:
             max_chunks=max_chunks,
             feature_columns=feature_columns,
             resample_freq=resample_freq,
+            snapshot_backend=snapshot_backend,
             rth_start=rth_start,
             rth_end=rth_end,
             seed=seed,
@@ -185,6 +198,7 @@ class MBP10WindowLoader:
         max_chunks: int | None = None,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
+        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -244,7 +258,7 @@ class MBP10WindowLoader:
                 file_book = drop_invalid_rows(file_book).sort_index(kind="stable")
 
                 if resample_freq is not None and len(file_book) > 0:
-                    file_book = resample_book(file_book, resample_freq)
+                    file_book = resample_book(file_book, resample_freq, backend=snapshot_backend)
 
                 if len(file_book) > 0:
                     processed_parts.append(file_book)
@@ -265,6 +279,7 @@ class MBP10WindowLoader:
             book,
             feature_columns=feature_columns,
             resample_freq=None,
+            snapshot_backend=snapshot_backend,
             rth_start=None,
             rth_end=None,
             seed=seed,
@@ -322,6 +337,31 @@ class MBP10WindowLoader:
             self._bid_sz[start:end].copy(),
             self._ask_sz[start:end].copy(),
             self._mid[start:end].copy(),
+        )
+
+    def sample_execution_window_arrays(
+        self, n_steps: int, *, start: int | None = None
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        start = self._resolve_start(n_steps, start)
+        end = start + n_steps
+        return (
+            self.features[start:end].copy(),
+            self._bid_px[start:end].copy(),
+            self._ask_px[start:end].copy(),
+            self._bid_sz[start:end].copy(),
+            self._ask_sz[start:end].copy(),
+            self._mid[start:end].copy(),
+            self._passive_buy_flow[start:end].copy(),
+            self._passive_sell_flow[start:end].copy(),
         )
 
 

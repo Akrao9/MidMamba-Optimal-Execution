@@ -79,6 +79,8 @@ does not reach 09:30 ET, increase `--max-chunks` or run it in Colab.
 
 SB3 checkpoints are **`.zip`** (model) plus optional **`{stem}_vecnormalize.pkl`** (normalization stats) and **`{stem}.run_config.json`** (hyperparameters for eval). If the vecnorm file sits next to the `.zip` with that naming, `evaluate_execution.py` picks it up even without a run config. Loading SB3/PyTorch checkpoints uses pickle-style deserialization, so pass `--trust-checkpoint` only for artifacts you created or otherwise trust.
 
+Fixed-cadence snapshots default to Pandas. For licensed kdb+/PyKX environments, pass `--snapshot-backend pykx` to use embedded q for the initial LOB snapshot aggregation; PPO rollouts still consume precomputed NumPy arrays, including passive buy/sell queue-depletion flows, so no q calls run inside `env.step()`.
+
 `--backend mamba` requires **CUDA** (see `train_ppo_smoke.py`); use `--backend gru` for CPU/MPS smoke.
 
 Colab/GPU starting point (adjust `--total-timesteps` and `--num-envs` to your machine):

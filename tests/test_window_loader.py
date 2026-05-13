@@ -100,6 +100,31 @@ def test_window_loader_resamples_book() -> None:
     assert loader.raw_lob.iloc[2]["ts_recv"] == pd.Timestamp("2025-10-01 13:30:00.500+00:00")
 
 
+def test_window_loader_exposes_precomputed_passive_flows() -> None:
+    book = _book(4)
+    book.loc[book.index[1], "bid_sz_00"] = 50.0
+    book.loc[book.index[1], "ask_sz_00"] = 50.0
+
+    loader = MBP10WindowLoader.from_book(book)
+    (
+        features,
+        bid_px,
+        ask_px,
+        bid_sz,
+        ask_sz,
+        mid,
+        passive_buy_flow,
+        passive_sell_flow,
+    ) = loader.sample_execution_window_arrays(4, start=0)
+
+    assert features.shape == (4, loader.n_features)
+    assert bid_px.shape == ask_px.shape == bid_sz.shape == ask_sz.shape == (4, 10)
+    assert mid.shape == passive_buy_flow.shape == passive_sell_flow.shape == (4,)
+    assert passive_buy_flow[0] == pytest.approx(50.0)
+    assert passive_sell_flow[0] == pytest.approx(50.0)
+    assert passive_buy_flow[-1] == 0.0
+
+
 def test_window_loader_detects_session_boundaries_after_reset_index() -> None:
     session_a = _book(3)
     session_b = _book(3)

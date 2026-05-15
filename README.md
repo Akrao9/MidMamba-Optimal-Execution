@@ -194,6 +194,8 @@ actor-critic policy. The model receives a stacked observation tensor of shape:
 ```text
 (sequence length, feature count) = (128, 141)
 ```
+###
+<img width="1617" height="972" alt="image" src="https://github.com/user-attachments/assets/fb625098-23cf-435b-ba4f-783de4a5074b" />
 
 Each timestep contains causal MBP-10 market features plus execution context such
 as remaining time, remaining inventory, last fill fraction, and TWAP deviation.

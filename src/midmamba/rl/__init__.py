@@ -7,6 +7,8 @@ from .sb3_policy import (
     midmamba_policy_kwargs,
 )
 from .sb3_train import (
+    CompileSafeCheckpointCallback,
+    CompileSafeEvalCallback,
     SB3RolloutLoggerCallback,
     build_stacked_vec_env,
     build_vec_env,
@@ -15,6 +17,7 @@ from .sb3_train import (
     make_lr_schedule,
     make_midmamba_env_thunk,
     make_ppo,
+    matching_vecnormalize_path,
     save_sb3_checkpoint,
     stacked_observation_space,
     unwrap_compiled_sb3_backbone,
@@ -22,6 +25,8 @@ from .sb3_train import (
 
 __all__ = [
     "AutocastActorCriticPolicy",
+    "CompileSafeCheckpointCallback",
+    "CompileSafeEvalCallback",
     "LOBMambaFeaturesExtractor",
     "SB3RolloutLoggerCallback",
     "build_stacked_vec_env",
@@ -32,6 +37,7 @@ __all__ = [
     "make_lr_schedule",
     "make_midmamba_env_thunk",
     "make_ppo",
+    "matching_vecnormalize_path",
     "midmamba_policy_kwargs",
     "save_sb3_checkpoint",
     "stacked_observation_space",

@@ -7,16 +7,14 @@ from .mbp10_features import (
     BID_CT,
     BID_PX,
     BID_SZ,
-    SnapshotBackend,
     add_market_fields,
     apply_rth_filter,
     book_integrity_report,
     build_feature_frame,
     drop_invalid_rows,
     resample_book,
-    resample_book_pykx,
 )
-from .window_loader import MBP10WindowLoader
+from .window_loader import MBP10ArrayWindowLoader, MBP10WindowLoader
 
 __all__ = [
     "ASK_CT",
@@ -25,13 +23,12 @@ __all__ = [
     "BID_CT",
     "BID_PX",
     "BID_SZ",
-    "SnapshotBackend",
     "add_market_fields",
     "apply_rth_filter",
     "book_integrity_report",
     "build_feature_frame",
     "drop_invalid_rows",
+    "MBP10ArrayWindowLoader",
     "MBP10WindowLoader",
     "resample_book",
-    "resample_book_pykx",
 ]

@@ -158,7 +158,6 @@ def _load_window(args: argparse.Namespace) -> tuple[MBP10WindowLoader, np.ndarra
         raise FileNotFoundError(f"no DBN files matched {args.dbn_glob!r}")
     kwargs = {
         "resample_freq": args.resample_freq,
-        "snapshot_backend": args.snapshot_backend,
         "rth_start": args.rth_start if args.rth_only else None,
         "rth_end": args.rth_end if args.rth_only else None,
         "seed": args.seed,
@@ -204,6 +203,7 @@ def _evaluate_policy_sb3(model: object, vec_env: object, *, episodes: int) -> di
         "episodes": s["episodes"],
         "reward_mean": s["reward_mean"],
         "implementation_shortfall_bps_mean": s["is_bps_mean"],
+        "implementation_shortfall_with_opportunity_bps_mean": s["is_with_opportunity_bps_mean"],
         "filled_qty_mean": s["filled_mean"],
         "remaining_inventory_mean": s["remaining_inventory_mean"],
     }
@@ -223,12 +223,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rth-end", default="16:00:00")
     parser.add_argument("--window-steps", type=int, default=2_000)
     parser.add_argument("--resample-freq", default=None, help="Optional fixed-cadence resampling freq, e.g. '100ms' or '1s'.")
-    parser.add_argument(
-        "--snapshot-backend",
-        choices=["pandas", "pykx"],
-        default="pandas",
-        help="Backend for fixed-cadence LOB snapshots. PyKX requires a kdb+ license.",
-    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--random-start", action="store_true")
     parser.add_argument("--execution-steps", type=int, default=60)
@@ -344,7 +338,10 @@ def _plot_trajectories(trajectories: dict[str, list[dict]], path: Path):
     for name, traj in trajectories.items():
         steps = [t["step"] if "step" in t else t["row"] for t in traj]
         inventory = [t["inventory"] if "inventory" in t else t["remaining_inventory"] for t in traj]
-        shortfall = [t["implementation_shortfall_bps"] for t in traj]
+        shortfall = [
+            t.get("implementation_shortfall_with_opportunity_bps", t["implementation_shortfall_bps"])
+            for t in traj
+        ]
 
         axes[0].plot(steps, inventory, label=name)
         axes[1].plot(steps, shortfall, label=name)

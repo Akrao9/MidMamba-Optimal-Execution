@@ -26,9 +26,13 @@ dev = [
     "tqdm>=4.66.0",
     "wandb>=0.16.0",
     "ruff>=0.6.0",
+    # Satisfy IPython's declared dependency when dev tools pull IPython in (e.g. Colab).
+    "jedi>=0.16",
 ]
 speed = [
-    "numba>=0.62.0",
+    # Upper bound keeps installs compatible with RAPIDS cudf/cuml 26.x (numba<0.62).
+    # MidMamba Numba kernels work on 0.60.x; omit [speed] if you need a newer numba only elsewhere.
+    "numba>=0.60.0,<0.62.0",
 ]
 gpu = [
     "mamba-ssm>=2.2.0",

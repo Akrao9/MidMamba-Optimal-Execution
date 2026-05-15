@@ -1,0 +1,315 @@
+MidMamba PPO First Run Report
+Created: 2026-05-14
+
+Purpose
+-------
+This report records the first full Stable-Baselines3 PPO training run for the
+MidMamba execution agent, including the data split, main hyperparameters,
+validation result, March held-out test result, and the immediate lessons for the
+next run.
+
+Project Context
+---------------
+Task:
+  Reinforcement-learning execution policy on MBP-10 limit order book data.
+
+Model:
+  MidMamba recurrent/sequence policy trained with PPO through Stable-Baselines3.
+
+Action objective:
+  Execute a 100,000 unit buy parent order over a 30-minute horizon while reducing
+  implementation shortfall and completing inventory.
+
+Data Split
+----------
+Training:
+  January 2025 plus February 2025 before 2025-02-24.
+
+Validation:
+  February 2025 from 2025-02-24 onward.
+
+Test:
+  March 2025 held out until after training.
+
+Market hours:
+  Regular trading hours only, 09:30:00 to 16:00:00 America/New_York.
+
+Sampling:
+  5-second causal MBP-10 snapshots.
+
+Execution horizon:
+  360 steps, equal to 30 minutes at 5 seconds per step.
+
+Feature Set
+-----------
+Feature family:
+  Engineered MBP-10 microstructure features.
+
+Approximate feature count:
+  140 features after adding realized volatility and RTH time-of-day encoding.
+
+Important feature changes included before this run:
+  - Price-aware Cont-Kukanov / Xu-Gould style MLOFI.
+  - Realized volatility features at windows 50, 200, and 1000.
+  - RTH time-of-day sin/cos features.
+  - No PyKX dependency.
+
+Core PPO Hyperparameters
+------------------------
+NUM_ENVS:
+  48
+
+ROLLOUT_STEPS:
+  512
+
+UPDATES:
+  2000
+
+TOTAL_TIMESTEPS:
+  49,152,000
+
+N_EPOCHS:
+  4
+
+BATCH_SIZE:
+  8192
+
+Learning rate:
+  1e-5 with rollout warmup.
+
+LR_WARMUP:
+  10 rollout units.
+
+CLIP_COEF:
+  0.1
+
+TARGET_KL:
+  0.03
+
+GAMMA:
+  0.995
+
+GAE_LAMBDA:
+  0.95
+
+Policy / Model Hyperparameters
+------------------------------
+D_MODEL:
+  192
+
+N_LAYERS:
+  3
+
+SEQ_LEN:
+  128
+
+DROPOUT:
+  0.0
+
+TORCH_COMPILE_MODE:
+  default
+
+Device:
+  CUDA when available.
+
+Execution / Reward Hyperparameters
+----------------------------------
+SIDE:
+  buy
+
+PARENT_QUANTITY:
+  100,000
+
+FILL_MODEL during training:
+  random
+
+FILL_MODEL during final policy evaluation:
+  proportional
+
+BETA_IS:
+  1.0
+
+BETA_SCHEDULE:
+  0.1
+
+BETA_COMPLETION:
+  1.0
+
+TERMINAL_PENALTY_BPS:
+  100.0
+
+REWARD_CLIP:
+  5.0
+
+NORM_REWARD:
+  True
+
+Validation / Checkpointing
+--------------------------
+EVAL_EPISODES:
+  200
+
+EVAL_EVERY_ROLLOUTS:
+  25
+
+CHECKPOINT_EVERY:
+  100
+
+Best validation checkpoint:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model.zip
+
+Best VecNormalize stats:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model_vecnormalize.pkl
+
+Final checkpoint:
+  /content/drive/MyDrive/midmamba/checkpoints/mamba_ppo.zip
+
+Training metrics:
+  /content/drive/MyDrive/midmamba/results/ppo_training_metrics.json
+
+Validation Results
+------------------
+Best validation episode reward:
+  -1.5540
+
+Best validation checkpoint timestep:
+  44,236,800
+
+Final validation episode reward:
+  -3.49 +/- 14.84 at 49,152,000 timesteps
+
+Training curve notes:
+  - Best validation reward occurred late in training.
+  - Final checkpoint was worse than the best validation checkpoint.
+  - The best checkpoint, not the final checkpoint, was used for March test.
+  - PPO update diagnostics stayed stable near the end:
+      approx_kl around 0.00006
+      clip_fraction around 0.0002
+      std around 0.297
+      explained_variance around 0.97 to 0.99
+
+March Held-Out Test Results
+---------------------------
+Evaluation setup:
+  200 paired March 2025 windows.
+  Same sampled start rows were used for policy and baseline evaluation.
+
+Baseline summary:
+  immediate:
+    IS mean bps: 0.031
+    95 pct CI halfwidth: 0.001
+    IS std: 0.010
+    mean filled quantity: 3,304
+
+  twap:
+    IS mean bps: 0.169
+    95 pct CI halfwidth: 1.216
+    IS std: 8.774
+    mean filled quantity: 99,964
+
+  almgren_chriss:
+    IS mean bps: 0.178
+    95 pct CI halfwidth: 1.217
+    IS std: 8.781
+    mean filled quantity: 100,000
+
+Policy summary:
+  reward: -5.6862 +/- 17.8266
+  IS mean bps: -0.8413
+  IS std: 15.564
+  95 pct CI halfwidth: 2.157
+  mean filled quantity: 94,104
+  mean remaining inventory: 5,895.544
+  fees: 1.4610 bps
+
+Paired policy differences:
+  vs immediate:
+    diff: -0.872 bps
+    95 pct CI halfwidth: 2.157
+    win rate: 54.0 pct
+
+  vs twap:
+    diff: -1.011 bps
+    95 pct CI halfwidth: 1.662
+    win rate: 56.5 pct
+
+  vs almgren_chriss:
+    diff: -1.019 bps
+    95 pct CI halfwidth: 1.661
+    win rate: 56.5 pct
+
+Interpretation
+--------------
+The first full run is promising but not yet production-conclusive.
+
+Positive signs:
+  - The best validation checkpoint generalized directionally to March.
+  - Mean March implementation shortfall was better than TWAP and Almgren-Chriss.
+  - Paired win rate versus TWAP was above 55 pct.
+  - The comparison was done on paired windows, which reduces noise versus an
+    unpaired baseline comparison.
+
+Main caveats:
+  - The policy advantage versus TWAP is not statistically decisive because the
+    95 pct confidence interval crosses zero.
+  - Policy shortfall variance is materially higher than TWAP variance.
+  - The policy under-filled on average by about 5.9 pct of the parent order.
+  - The immediate baseline is not directly comparable because it only filled
+    about 3.3 pct of the parent quantity.
+
+Daily March Notes
+-----------------
+The daily breakdown did not show a simple monotonic decay through March. Some
+late-March days were weak and some were fine, which points more toward regime
+sensitivity plus completion discipline than pure data staleness.
+
+Strong policy days versus TWAP included:
+  2025-03-03: policy - TWAP = -12.986 bps
+  2025-03-04: policy - TWAP = -12.122 bps
+  2025-03-06: policy - TWAP = -6.234 bps
+  2025-03-17: policy - TWAP = -4.948 bps
+
+Weak policy days versus TWAP included:
+  2025-03-12: policy - TWAP = +6.418 bps
+  2025-03-24: policy - TWAP = +5.065 bps
+  2025-03-19: policy - TWAP = +2.971 bps
+
+Largest completion issue:
+  2025-03-11 had mean filled quantity of 57,265 and mean remaining inventory of
+  42,735.
+
+Conclusion
+----------
+This is a good first portfolio-project result: the agent shows a real-looking
+execution signal on held-out March data, but the result should be presented as
+research-positive rather than profitable or production-ready. The most important
+next step is to improve completion discipline while preserving the shortfall
+edge.
+
+Recommended Next Run
+--------------------
+Keep the same clean train / validation / test split, then increase completion
+pressure:
+
+  BETA_COMPLETION = 2.0
+  TERMINAL_PENALTY_BPS = 250.0
+
+Primary acceptance targets:
+  filled_mean >= 99,000
+  remaining_mean <= 1,000
+  paired policy - TWAP < 0 bps
+  win_rate_vs_twap > 55 pct
+  daily losing days not worse than about +3 bps on average
+
+Optional throughput experiment after the worker-loader memmap fix:
+  NUM_ENVS = 80
+  ROLLOUT_STEPS = 512
+  BATCH_SIZE = 8192
+  N_EPOCHS = 4
+  UPDATES = 1200
+  LR_WARMUP = 6
+  EVAL_EVERY_ROLLOUTS = 15
+  CHECKPOINT_EVERY = 60
+
+If 80 envs does not improve FPS or stresses RAM, use 64 envs as the safer
+middle ground.

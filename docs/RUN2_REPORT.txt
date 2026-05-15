@@ -1,0 +1,428 @@
+MidMamba PPO Run 2 Report
+Created: 2026-05-14
+
+Purpose
+-------
+This report records the second full Stable-Baselines3 PPO training experiment
+for MidMamba. Run 2 changed the training geometry from 48 to 80 environments and
+increased completion pressure in the reward. The run improved held-out March
+implementation shortfall, but failed the completion target.
+
+Run 2 Goal
+----------
+Primary goal:
+  Reduce the leftover inventory problem observed in Run 1 while preserving or
+  improving the held-out March implementation-shortfall edge versus TWAP.
+
+Run 1 issue being addressed:
+  Run 1 had good March IS versus TWAP, but left about 5.9 pct of the parent
+  order unfilled on average.
+
+Data Split
+----------
+Training:
+  January 2025 plus February 2025 before 2025-02-24.
+
+Validation:
+  February 2025 from 2025-02-24 onward.
+
+Test:
+  March 2025 held out until after training.
+
+Market hours:
+  Regular trading hours only, 09:30:00 to 16:00:00 America/New_York.
+
+Sampling:
+  5-second causal MBP-10 snapshots.
+
+Execution horizon:
+  360 steps, equal to 30 minutes at 5 seconds per step.
+
+Feature Set
+-----------
+Test feature count:
+  141
+
+Feature notes:
+  The run used the updated MBP-10 feature stack with price-aware MLOFI, realized
+  volatility, RTH time-of-day encoding, and the current synchronized repo code.
+
+Core PPO Hyperparameters
+------------------------
+NUM_ENVS:
+  80
+
+ROLLOUT_STEPS:
+  512
+
+UPDATES configured:
+  1200
+
+TOTAL_TIMESTEPS configured:
+  49,152,000
+
+Training stopped at:
+  Approximately 31,334,400 timesteps after validation plateaued.
+
+Rollout buffer:
+  40,960 steps per PPO update.
+
+N_EPOCHS:
+  4
+
+BATCH_SIZE:
+  8192
+
+Minibatches per epoch:
+  5
+
+Learning rate:
+  1e-5
+
+LR schedule:
+  cosine
+
+LR_WARMUP:
+  6 rollout units, equal to 245,760 timesteps.
+
+CLIP_COEF:
+  0.1
+
+TARGET_KL:
+  0.03
+
+GAMMA:
+  0.995
+
+GAE_LAMBDA:
+  0.95
+
+ENTROPY_COEF:
+  0.0003
+
+MAX_GRAD_NORM:
+  0.5
+
+Policy / Model Hyperparameters
+------------------------------
+BACKEND:
+  mamba
+
+D_MODEL:
+  192
+
+N_LAYERS:
+  3
+
+SEQ_LEN:
+  128
+
+SPATIAL_STEM:
+  True
+
+NET_ARCH:
+  pi=[256, 256], vf=[256, 256]
+
+DROPOUT:
+  0.0
+
+USE_BF16:
+  True
+
+USE_TORCH_COMPILE:
+  True
+
+TORCH_COMPILE_MODE:
+  default
+
+USE_NUMBA:
+  True
+
+Execution / Reward Hyperparameters
+----------------------------------
+SIDE:
+  buy
+
+PARENT_QUANTITY:
+  100,000
+
+FILL_MODEL during training:
+  random
+
+FILL_MODEL during final policy evaluation:
+  proportional
+
+BETA_IS:
+  1.0
+
+BETA_SCHEDULE:
+  0.1
+
+BETA_COMPLETION:
+  2.0
+
+TERMINAL_PENALTY_BPS:
+  250.0
+
+REWARD_CLIP:
+  5.0
+
+NORM_REWARD:
+  True
+
+Transaction Costs
+-----------------
+TAKER_FEE_BPS:
+  2.0
+
+MAKER_REBATE_BPS:
+  0.5
+
+Validation / Checkpointing
+--------------------------
+EVAL_EPISODES:
+  200
+
+EVAL_EVERY_ROLLOUTS:
+  15
+
+Evaluation interval:
+  614,400 timesteps.
+
+CHECKPOINT_EVERY:
+  60
+
+Checkpoint interval:
+  2,457,600 timesteps.
+
+Best validation checkpoint:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model.zip
+
+Best VecNormalize stats:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model_vecnormalize.pkl
+
+Validation Results
+------------------
+Best validation episode reward:
+  -2.81
+
+Best validation timestep:
+  19,046,400
+
+Best validation episode length:
+  298.29 +/- 66.39
+
+Best validation log:
+  Eval num_timesteps=19046400, episode_reward=-2.81 +/- 17.48
+  Episode length: 298.29 +/- 66.39
+
+Later validation behavior:
+  The run did not improve after the 19.05M-timestep best. Validation rewards
+  plateaued mostly in the -3.3 to -5.9 range and then drifted worse.
+
+Final observed validation before stopping:
+  Eval num_timesteps=31334400, episode_reward=-5.86 +/- 15.36
+  Episode length: 297.44 +/- 69.00
+
+Training diagnostics near the stop point:
+  approx_kl remained safe, around 0.0005.
+  clip_fraction remained healthy, around 0.008.
+  explained_variance stayed high, around 0.97 to 0.99.
+  std stayed near 0.296.
+  fps stabilized around 1270.
+
+March Held-Out Test Setup
+-------------------------
+Test data:
+  March 2025, 20 files.
+
+Test loader:
+  93,600 rows.
+
+Feature count:
+  141.
+
+Evaluation windows:
+  200 paired March windows.
+
+Window length:
+  360 steps.
+
+Baseline Results
+----------------
+immediate:
+  IS mean bps: 0.031
+  95 pct CI halfwidth: 0.001
+  IS std: 0.010
+  mean filled quantity: 3,304
+
+twap:
+  IS mean bps: 0.169
+  95 pct CI halfwidth: 1.216
+  IS std: 8.774
+  mean filled quantity: 99,964
+
+almgren_chriss:
+  IS mean bps: 0.178
+  95 pct CI halfwidth: 1.217
+  IS std: 8.781
+  mean filled quantity: 100,000
+
+Policy Test Results
+-------------------
+Checkpoint used:
+  Best validation checkpoint.
+
+Policy reward:
+  -8.9502 +/- 18.0168
+
+Policy IS mean:
+  -1.0327 bps
+
+Policy IS std:
+  14.811 bps
+
+Policy IS 95 pct CI halfwidth:
+  2.053 bps
+
+Mean filled quantity:
+  88,360
+
+Mean remaining inventory:
+  11,639.5139
+
+Fees:
+  0.9789 bps
+
+Paired Policy Differences
+-------------------------
+Policy vs immediate:
+  diff: -1.063 bps
+  95 pct CI halfwidth: 2.053
+  win rate: 53.5 pct
+
+Policy vs twap:
+  diff: -1.202 bps
+  95 pct CI halfwidth: 1.659
+  win rate: 55.0 pct
+
+Policy vs almgren_chriss:
+  diff: -1.210 bps
+  95 pct CI halfwidth: 1.659
+  win rate: 55.0 pct
+
+Run 1 vs Run 2 Comparison
+-------------------------
+Run 1 policy IS:
+  -0.841 bps
+
+Run 2 policy IS:
+  -1.033 bps
+
+Result:
+  Run 2 improved mean policy IS by about 0.192 bps.
+
+Run 1 policy - TWAP:
+  -1.011 bps
+
+Run 2 policy - TWAP:
+  -1.202 bps
+
+Result:
+  Run 2 improved paired mean policy advantage versus TWAP by about 0.191 bps.
+
+Run 1 win rate versus TWAP:
+  56.5 pct
+
+Run 2 win rate versus TWAP:
+  55.0 pct
+
+Result:
+  Run 2 had a slightly lower win rate.
+
+Run 1 mean filled quantity:
+  94,104
+
+Run 2 mean filled quantity:
+  88,360
+
+Result:
+  Run 2 filled about 5,744 fewer units on average.
+
+Run 1 mean remaining inventory:
+  5,895
+
+Run 2 mean remaining inventory:
+  11,640
+
+Result:
+  Run 2 left about 5,745 more units unfilled on average.
+
+Interpretation
+--------------
+Run 2 is not a clean improvement over Run 1. It improved held-out March
+implementation shortfall, but it worsened completion materially.
+
+Positive signs:
+  - Mean March IS improved versus Run 1.
+  - Paired policy advantage versus TWAP improved from about -1.011 bps to
+    about -1.202 bps.
+  - PPO training remained stable.
+  - 80 environments worked without memory pressure and achieved about 1270 fps.
+
+Main failure:
+  The policy left too much inventory unfilled. Mean remaining inventory rose to
+  about 11.6 pct of the 100,000 unit parent order.
+
+Statistical caveat:
+  The paired policy advantage versus TWAP is promising, but the 95 pct
+  confidence interval still crosses zero. This is research-positive, not
+  production-conclusive.
+
+Acceptance Target Check
+-----------------------
+filled_mean >= 99,000:
+  Failed. Observed 88,360.
+
+remaining_mean <= 1,000:
+  Failed. Observed 11,639.5139.
+
+paired policy - TWAP < 0 bps:
+  Passed. Observed -1.202 bps.
+
+win_rate_vs_twap > 55 pct:
+  Borderline / failed by strict greater-than rule. Observed 55.0 pct.
+
+Conclusion
+----------
+Run 2 learned a stronger opportunistic execution signal, but the reward still
+allows the policy to score well while leaving too much inventory. For portfolio
+presentation, Run 2 is useful because it exposes a real execution-design tradeoff:
+improved shortfall versus unacceptable completion risk.
+
+Recommended Next Experiment
+---------------------------
+Do not focus on more environments or longer training first. The next issue is
+reward and environment design.
+
+Recommended reward settings:
+  BETA_COMPLETION = 4.0
+  TERMINAL_PENALTY_BPS = 500.0
+
+Better structural fix:
+  Add or enforce stronger final liquidation behavior so the policy cannot
+  finish evaluation with more than 1 to 2 pct remaining inventory while still
+  looking good on IS.
+
+Suggested next acceptance criteria:
+  filled_mean >= 99,000
+  remaining_mean <= 1,000
+  policy - TWAP <= 0 bps
+  win_rate_vs_twap >= 55 pct
+
+Portfolio Framing
+-----------------
+Run 2 should be described honestly:
+  The agent improved mean held-out March implementation shortfall versus TWAP,
+  but did so by accepting materially higher under-completion. This motivated the
+  next iteration toward stricter inventory-completion constraints.

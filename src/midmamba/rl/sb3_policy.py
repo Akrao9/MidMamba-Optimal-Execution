@@ -165,11 +165,20 @@ def midmamba_policy_kwargs(
     feature_names: Sequence[str] | None,
     net_arch: list[int] | dict[str, list[int]] | None = None,
     mamba_kwargs: dict[str, Any] | None = None,
+    log_std_init: float = -1.2,
     autocast_enabled: bool = False,
     autocast_device_type: str = "cuda",
     autocast_dtype: str | torch.dtype = "bfloat16",
 ) -> dict[str, Any]:
-    """policy_kwargs for SB3 ``PPO('MlpPolicy', ..., policy_kwargs=...)``."""
+    """policy_kwargs for SB3 ``PPO('MlpPolicy', ..., policy_kwargs=...)``.
+
+    ``log_std_init`` defaults to ``-1.2`` (std ≈ 0.3) for continuous Box(-1, 1)
+    action spaces. SB3's default ``log_std_init=0.0`` produces std=1.0 which
+    on a [-1, 1] box action space saturates at ±1 about two thirds of the time
+    early in training, wasting rollout data exploring nearly-saturated actions.
+    Pass ``log_std_init=0.0`` to restore the SB3 default if the action space is
+    not [-1, 1]-bounded or you want maximum initial exploration.
+    """
     if net_arch is None:
         net_arch = dict(pi=[128, 128], vf=[128, 128])
     kwargs: dict[str, Any] = {
@@ -184,6 +193,7 @@ def midmamba_policy_kwargs(
             "mamba_kwargs": mamba_kwargs,
         },
         "net_arch": net_arch,
+        "log_std_init": float(log_std_init),
     }
     if autocast_enabled:
         kwargs.update(

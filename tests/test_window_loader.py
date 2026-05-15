@@ -125,6 +125,22 @@ def test_window_loader_exposes_precomputed_passive_flows() -> None:
     assert passive_buy_flow[-1] == 0.0
 
 
+def test_array_window_loader_reuses_precomputed_arrays_without_raw_lob() -> None:
+    loader = MBP10WindowLoader.from_book(_book(8), seed=1)
+    array_loader = loader.to_array_loader(seed=2)
+
+    assert not hasattr(array_loader, "raw_lob")
+    assert array_loader.features is loader.features
+    assert array_loader._bid_px is loader._bid_px
+    assert array_loader.feature_names == loader.feature_names
+
+    original = loader.sample_execution_window_arrays(4, start=2)
+    array_backed = array_loader.sample_execution_window_arrays(4, start=2)
+
+    for left, right in zip(original, array_backed, strict=True):
+        np.testing.assert_allclose(left, right)
+
+
 def test_window_loader_detects_session_boundaries_after_reset_index() -> None:
     session_a = _book(3)
     session_b = _book(3)

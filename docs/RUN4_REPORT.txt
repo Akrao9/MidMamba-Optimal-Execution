@@ -1,0 +1,525 @@
+MidMamba PPO Run 4 Report
+Created: 2026-05-15
+
+Purpose
+-------
+This report records the fourth full Stable-Baselines3 PPO training experiment
+for MidMamba. Run 4 was a focused ablation after Run 3 fixed the incomplete
+execution accounting problem but still underperformed TWAP on the corrected
+March held-out metric.
+
+Run 4 changed two things:
+  - BETA_SCHEDULE was reduced from 0.1 to 0.03.
+  - USE_NUMBA was set to False after the NumPy simulator path proved faster in
+    this SubprocVecEnv setup.
+
+The goal was to preserve the strong completion discipline from Run 3 while
+allowing the policy more freedom to deviate from TWAP when the book state was
+favorable.
+
+Run 4 Goal
+----------
+Primary goal:
+  Recover implementation-shortfall edge without reopening the incomplete-
+  execution loophole.
+
+Run 3 problem being addressed:
+  Run 3 completed much more reliably, but underperformed TWAP on corrected
+  March IS+opp by about +0.720 bps.
+
+Run 3 reference:
+  Policy raw IS:   +0.7729 bps
+  Policy IS+opp:  +0.8916 bps
+  Mean filled:    98,695
+  Mean remaining: 1,304.5602
+  Policy - TWAP:  +0.720 bps on corrected IS+opp
+
+Data Split
+----------
+Training:
+  January 2025 plus February 2025 before 2025-02-24.
+
+Validation:
+  February 2025 from 2025-02-24 onward.
+
+Test:
+  March 2025 held out until after training.
+
+Market hours:
+  Regular trading hours only, 09:30:00 to 16:00:00 America/New_York.
+
+Sampling:
+  5-second causal MBP-10 snapshots.
+
+Execution horizon:
+  360 steps, equal to 30 minutes at 5 seconds per step.
+
+Feature Set
+-----------
+Test feature count:
+  141
+
+Feature notes:
+  The run used the updated MBP-10 feature stack with price-aware MLOFI,
+  realized volatility, RTH time-of-day encoding, and corrected terminal-
+  inventory accounting.
+
+Accounting / Evaluation Metric
+------------------------------
+Headline metric:
+  Corrected IS+opp.
+
+Definition:
+  IS+opp = realized implementation shortfall plus opportunity shortfall from
+  remaining inventory marked to the final mid price.
+
+Reason:
+  Raw IS can reward a policy for not trading difficult residual inventory.
+  IS+opp penalizes that behavior and is the metric used for Run 4 conclusions.
+
+Core PPO Hyperparameters
+------------------------
+NUM_ENVS:
+  96
+
+ROLLOUT_STEPS:
+  512
+
+UPDATES configured:
+  1000
+
+TOTAL_TIMESTEPS configured:
+  49,152,000
+
+Training stopped at:
+  Approximately 28,901,376 timesteps after no new best validation result for
+  about 17M timesteps.
+
+Rollout buffer:
+  49,152 steps per PPO update.
+
+N_EPOCHS:
+  4
+
+BATCH_SIZE:
+  8192
+
+Minibatches per epoch:
+  6
+
+Learning rate:
+  1e-5
+
+LR schedule:
+  cosine
+
+LR_WARMUP:
+  6 rollout units, equal to 294,912 timesteps.
+
+CLIP_COEF:
+  0.1
+
+TARGET_KL:
+  0.03
+
+GAMMA:
+  0.995
+
+GAE_LAMBDA:
+  0.95
+
+ENTROPY_COEF:
+  0.0003
+
+MAX_GRAD_NORM:
+  0.5
+
+Policy / Model Hyperparameters
+------------------------------
+BACKEND:
+  mamba
+
+D_MODEL:
+  192
+
+N_LAYERS:
+  3
+
+SEQ_LEN:
+  128
+
+SPATIAL_STEM:
+  True
+
+NET_ARCH:
+  pi=[256, 256], vf=[256, 256]
+
+DROPOUT:
+  0.0
+
+USE_BF16:
+  True
+
+USE_TORCH_COMPILE:
+  True
+
+TORCH_COMPILE_MODE:
+  default
+
+USE_NUMBA:
+  False
+
+Throughput note:
+  With 96 environments, USE_NUMBA=False reached about 1887 fps before the first
+  evaluation callback and about 1300 fps later in training. In this setup the
+  vectorized NumPy simulator path was faster than the Numba path, likely because
+  Numba call/worker overhead dominated for small MBP-10 arrays.
+
+Execution / Reward Hyperparameters
+----------------------------------
+SIDE:
+  buy
+
+PARENT_QUANTITY:
+  100,000
+
+FILL_MODEL during training:
+  random
+
+FILL_MODEL during final policy evaluation:
+  proportional
+
+BETA_IS:
+  1.0
+
+BETA_SCHEDULE:
+  0.03
+
+BETA_COMPLETION:
+  4.0
+
+TERMINAL_PENALTY_BPS:
+  500.0
+
+REWARD_CLIP:
+  5.0
+
+NORM_REWARD:
+  True
+
+Transaction Costs
+-----------------
+TAKER_FEE_BPS:
+  2.0
+
+MAKER_REBATE_BPS:
+  0.5
+
+Validation / Checkpointing
+--------------------------
+EVAL_EPISODES:
+  200
+
+EVAL_EVERY_ROLLOUTS:
+  12
+
+Evaluation interval:
+  589,824 timesteps.
+
+CHECKPOINT_EVERY:
+  50
+
+Checkpoint interval:
+  2,457,600 timesteps.
+
+Best validation checkpoint:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model.zip
+
+Best VecNormalize stats:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model_vecnormalize.pkl
+
+Validation Results
+------------------
+Initial validation result:
+  Eval num_timesteps=589824, episode_reward=-60.56 +/- 52.27
+  Episode length: 359.39 +/- 1.56
+
+Best validation result:
+  Eval num_timesteps=11796480, episode_reward=+1.88 +/- 18.56
+  Episode length: 296.17 +/- 35.77
+
+Best validation timestep:
+  11,796,480
+
+Later validation behavior:
+  No new best was observed after the 11.80M-timestep checkpoint.
+
+Selected later validations:
+  Eval num_timesteps=21233664, episode_reward=-0.69 +/- 19.37
+  Episode length: 266.56 +/- 55.36
+
+  Eval num_timesteps=24772608, episode_reward=-0.89 +/- 23.09
+  Episode length: 268.42 +/- 51.75
+
+  Eval num_timesteps=28901376, episode_reward=-1.90 +/- 20.56
+  Episode length: 273.15 +/- 52.25
+
+Training diagnostics near the stop point:
+  approx_kl: 0.00041023133
+  clip_fraction: 0.00864
+  explained_variance: 0.962
+  learning_rate: 3.69e-06
+  std: 0.299
+  fps: about 1306
+
+Validation interpretation:
+  Run 4 produced the best validation reward observed across the experiments:
+  +1.88 at 11.80M timesteps. The run then plateaued around -3 to 0 reward and
+  did not improve despite another 17M timesteps.
+
+March Held-Out Test Setup
+-------------------------
+Test data:
+  March 2025, 20 files.
+
+Test loader:
+  93,600 rows.
+
+Feature count:
+  141.
+
+Evaluation windows:
+  200 paired March windows.
+
+Window length:
+  360 steps.
+
+Checkpoint used:
+  Best validation checkpoint selected on February validation.
+
+Corrected metric:
+  IS+opp, not raw IS, is the headline metric.
+
+Baseline Results, Corrected IS+opp
+----------------------------------
+immediate:
+  IS+opp mean bps: 0.031
+  95 pct CI halfwidth: 0.001
+  IS+opp std: 0.010
+  mean filled quantity: 3,304
+
+twap:
+  IS+opp mean bps: 0.172
+  95 pct CI halfwidth: 1.217
+  IS+opp std: 8.782
+  mean filled quantity: 99,964
+
+almgren_chriss:
+  IS+opp mean bps: 0.178
+  95 pct CI halfwidth: 1.217
+  IS+opp std: 8.781
+  mean filled quantity: 100,000
+
+Policy Test Results
+-------------------
+Policy reward:
+  -12.9355 +/- 49.7433
+
+Policy raw IS mean:
+  +0.7425 bps
+
+Policy raw IS std:
+  20.0175 bps
+
+Policy corrected IS+opp mean:
+  +0.7091 bps
+
+Policy corrected IS+opp std:
+  20.422 bps
+
+Policy corrected IS+opp 95 pct CI halfwidth:
+  2.830 bps
+
+Mean filled quantity:
+  98,441
+
+Mean remaining inventory:
+  1,558.8420
+
+Fees:
+  1.1341 bps
+
+Policy vs TWAP, Corrected IS+opp
+--------------------------------
+TWAP corrected IS+opp:
+  +0.172 bps
+
+Policy corrected IS+opp:
+  +0.7091 bps
+
+Policy - TWAP:
+  +0.5371 bps
+
+Daily weighted win rate versus TWAP:
+  Approximately 51.0 pct, computed from the daily table.
+
+Daily Breakdown
+---------------
+Strong early March wins:
+  2025-03-03:
+    policy IS+opp: -18.147 bps
+    TWAP IS+opp:   -3.093 bps
+    policy - TWAP: -15.054 bps
+    win rate:      88.9 pct
+    filled:        100,000
+
+  2025-03-04:
+    policy IS+opp: -24.381 bps
+    TWAP IS+opp:   -3.231 bps
+    policy - TWAP: -21.150 bps
+    win rate:      100.0 pct
+    filled:        100,000
+
+Other winning days:
+  2025-03-06: policy - TWAP = -4.328 bps
+  2025-03-13: policy - TWAP = -4.890 bps
+  2025-03-17: policy - TWAP = -4.238 bps
+  2025-03-18: policy - TWAP = -1.525 bps
+  2025-03-20: policy - TWAP = -2.198 bps
+  2025-03-26: policy - TWAP = -4.920 bps
+  2025-03-27: policy - TWAP = -2.854 bps
+  2025-03-28: policy - TWAP = -2.206 bps
+
+Weak days:
+  2025-03-10: policy - TWAP = +10.354 bps
+  2025-03-11: policy - TWAP = +4.501 bps
+  2025-03-12: policy - TWAP = +10.777 bps
+  2025-03-19: policy - TWAP = +9.771 bps
+  2025-03-21: policy - TWAP = +5.574 bps
+  2025-03-24: policy - TWAP = +5.633 bps
+
+Daily interpretation:
+  The policy showed strong localized outperformance, especially immediately
+  after the February validation period, but failed to maintain a robust
+  month-wide edge through March.
+
+Run 3 vs Run 4 Comparison
+-------------------------
+Run 3 corrected IS+opp:
+  +0.8916 bps
+
+Run 4 corrected IS+opp:
+  +0.7091 bps
+
+Result:
+  Run 4 improved corrected March IS+opp by about 0.1825 bps.
+
+Run 3 mean filled quantity:
+  98,695
+
+Run 4 mean filled quantity:
+  98,441
+
+Result:
+  Run 4 filled about 254 fewer units on average.
+
+Run 3 mean remaining inventory:
+  1,304.5602
+
+Run 4 mean remaining inventory:
+  1,558.8420
+
+Result:
+  Run 4 left about 254 more units unfilled on average.
+
+Run 3 policy - TWAP on IS+opp:
+  +0.720 bps
+
+Run 4 policy - TWAP on IS+opp:
+  +0.537 bps
+
+Result:
+  Reducing schedule pressure helped recover about 0.183 bps of corrected
+  shortfall edge, but not enough to beat TWAP.
+
+Run 4 Acceptance Target Check
+-----------------------------
+filled_mean >= 99,000:
+  Failed. Observed 98,441.
+
+remaining_mean <= 1,000:
+  Failed. Observed 1,558.8420.
+
+policy IS+opp <= TWAP IS+opp:
+  Failed. Observed policy 0.7091 bps versus TWAP 0.172 bps.
+
+paired policy - TWAP <= 0 bps:
+  Failed. Observed +0.5371 bps.
+
+win_rate_vs_twap >= 55 pct:
+  Failed. Approximate daily-weighted win rate was about 51.0 pct.
+
+Interpretation
+--------------
+Run 4 is the best corrected run by March IS+opp, but it still does not produce
+a robust held-out edge versus TWAP.
+
+Positive signs:
+  - Best validation reward improved from Run 3's -1.88 to Run 4's +1.88.
+  - March corrected IS+opp improved from +0.8916 bps to +0.7091 bps.
+  - The policy completed most orders and did not rely on hiding leftover
+    inventory.
+  - Strong localized outperformance appeared on 2025-03-03 and 2025-03-04, and
+    on selected later March days.
+
+Main failure:
+  Month-wide March performance remained worse than TWAP by about +0.537 bps on
+  corrected IS+opp.
+
+Statistical caveat:
+  The policy's standard deviation was much higher than TWAP's. With only 200
+  evaluation windows, the mean difference is noisy. The result should be read as
+  no reliable edge, not as definitive proof that the policy can never beat TWAP.
+
+Final Project Conclusion
+------------------------
+The final static policy did not beat TWAP over the full held-out March month.
+However, the daily breakdown shows strong early-March performance and mixed
+later performance. This suggests the learned execution policy is regime-
+sensitive and may decay as the market moves away from the validation period.
+
+Recommended Future Direction
+----------------------------
+Do not continue simple single-month static retraining runs without new data.
+The next scientifically useful step is walk-forward retraining:
+
+  Train on a recent rolling window.
+  Validate on the latest few sessions.
+  Test/deploy on the next one to five sessions.
+  Slide forward and repeat.
+
+If April data is available:
+  Train on January, February, and early March.
+  Validate on later March.
+  Test on April.
+
+If April data is not available:
+  Wrap the project as a rigorous negative/diagnostic RL execution study.
+
+Portfolio Framing
+-----------------
+Run 4 should be presented as the final best corrected policy:
+
+  The policy learned meaningful execution behavior and showed localized
+  outperformance, especially on the first two March test sessions. But a single
+  static model did not maintain a robust month-wide advantage versus TWAP. The
+  project therefore motivates rolling walk-forward retraining and regime
+  monitoring rather than claiming a profitable static execution agent.
+
+Conclusion
+----------
+Run 4 improved over Run 3 and is the best corrected model in the project, but it
+still failed the main held-out benchmark. The project should be wrapped as a
+complete and honest RL execution research project: strong simulator and training
+infrastructure, corrected accounting, paired baseline evaluation, clear evidence
+of regime sensitivity, and no overstated profitability claim.

@@ -350,7 +350,7 @@ def test_midmamba_reward_info_contains_components() -> None:
 
 
 def test_midmamba_reward_clipped_within_bounds() -> None:
-    """Per-step reward should never exceed reward_clip."""
+    """The shaped per-step reward component should respect reward_clip."""
     features = np.zeros((3, 2), dtype=np.float32)
     env = MidMambaExecutionEnv(
         _WindowLoader(features, _book(3)),
@@ -359,8 +359,8 @@ def test_midmamba_reward_clipped_within_bounds() -> None:
     env.reset()
 
     for _ in range(3):
-        _, reward, done, trunc, _ = env.step(np.array([1.0, 1.0], dtype=np.float32))
-        assert -2.0 <= reward <= 2.0
+        _, _reward, done, trunc, info = env.step(np.array([1.0, 1.0], dtype=np.float32))
+        assert -2.0 <= info["reward_shaped_after_clip"] <= 2.0
         if done or trunc:
             break
 
@@ -381,9 +381,12 @@ def test_midmamba_schedule_penalty_zero_when_on_twap() -> None:
 
 def test_midmamba_completion_penalty_scales_with_volatility() -> None:
     """Higher sigma_step_bps should produce a larger completion penalty."""
+    book = _book(3)
+    for i in range(10):
+        book[f"ask_sz_{i:02d}"] = 0.0
     features = np.zeros((3, 2), dtype=np.float32)
     env = MidMambaExecutionEnv(
-        _WindowLoader(features, _book(3)),
+        _WindowLoader(features, book),
         execution_steps=3, initial_inventory=100.0,
         beta_completion=0.1, reward_clip=0.0,
     )
@@ -424,9 +427,12 @@ def test_midmamba_beta_is_zero_disables_is_component() -> None:
 
 
 def test_midmamba_terminal_penalty_bps_applies_to_leftover_inventory() -> None:
+    book = _book(3)
+    for i in range(10):
+        book[f"ask_sz_{i:02d}"] = 0.0
     features = np.zeros((3, 2), dtype=np.float32)
     env = MidMambaExecutionEnv(
-        _WindowLoader(features, _book(3)),
+        _WindowLoader(features, book),
         execution_steps=3,
         initial_inventory=100.0,
         terminal_penalty_bps=500.0,
@@ -448,6 +454,31 @@ def test_midmamba_terminal_penalty_bps_applies_to_leftover_inventory() -> None:
     assert info["reward_terminal_penalty"] == pytest.approx(500.0)
 
 
+def test_midmamba_terminal_penalty_bypasses_reward_clip() -> None:
+    book = _book(2)
+    for i in range(10):
+        book[f"ask_sz_{i:02d}"] = 0.0
+    features = np.zeros((2, 2), dtype=np.float32)
+    env = MidMambaExecutionEnv(
+        _WindowLoader(features, book),
+        execution_steps=2,
+        initial_inventory=100.0,
+        terminal_penalty_bps=500.0,
+        beta_is=0.0,
+        beta_schedule=0.0,
+        beta_completion=0.0,
+        reward_clip=2.0,
+    )
+    env.reset()
+    env.step(np.array([-1.0, 0.0], dtype=np.float32))
+
+    _, reward, _terminated, truncated, info = env.step(np.array([-1.0, -1.0], dtype=np.float32))
+
+    assert truncated is True
+    assert info["reward_shaped_after_clip"] == pytest.approx(0.0)
+    assert reward == pytest.approx(-500.0)
+
+
 def test_midmamba_final_step_negative_aggressiveness_liquidates_marketable() -> None:
     book = _book(2)
     book.loc[:, "ask_sz_00"] = 10.0
@@ -464,7 +495,7 @@ def test_midmamba_final_step_negative_aggressiveness_liquidates_marketable() -> 
     env.reset()
     env.step(np.array([-1.0, 0.0], dtype=np.float32))
 
-    _, _, terminated, truncated, info = env.step(np.array([0.0, -1.0], dtype=np.float32))
+    _, _, terminated, truncated, info = env.step(np.array([-1.0, -1.0], dtype=np.float32))
 
     assert terminated is True
     assert truncated is False
@@ -472,6 +503,38 @@ def test_midmamba_final_step_negative_aggressiveness_liquidates_marketable() -> 
     assert info["inventory"] == pytest.approx(0.0)
     assert info["levels_touched"] == 2
     assert info["is_passive"] == 0
+
+
+def test_midmamba_opportunity_shortfall_marks_unfilled_inventory_to_market() -> None:
+    book = _book(2)
+    for i in range(10):
+        lv = f"{i:02d}"
+        book[f"ask_sz_{lv}"] = 0.0
+        book.loc[book.index[1], f"bid_px_{lv}"] += 1.0
+        book.loc[book.index[1], f"ask_px_{lv}"] += 1.0
+    features = np.zeros((2, 2), dtype=np.float32)
+    env = MidMambaExecutionEnv(
+        _WindowLoader(features, book),
+        execution_steps=2,
+        initial_inventory=100.0,
+        beta_is=0.0,
+        beta_schedule=0.0,
+        beta_completion=0.0,
+        terminal_penalty_bps=0.0,
+        reward_clip=0.0,
+    )
+    env.reset()
+    env.step(np.array([-1.0, 0.0], dtype=np.float32))
+
+    _, _, _terminated, truncated, info = env.step(np.array([-1.0, -1.0], dtype=np.float32))
+
+    assert truncated is True
+    assert info["filled_qty"] == pytest.approx(0.0)
+    assert info["implementation_shortfall_bps"] == pytest.approx(0.0)
+    assert info["opportunity_shortfall_bps"] > 90.0
+    assert info["implementation_shortfall_with_opportunity_bps"] == pytest.approx(
+        info["opportunity_shortfall_bps"],
+    )
 
 
 # ── Transaction cost tests ─────────────────────────────────────────────

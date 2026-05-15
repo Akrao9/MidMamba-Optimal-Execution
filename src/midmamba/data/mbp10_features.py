@@ -5,8 +5,6 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-SnapshotBackend = Literal["pandas", "pykx"]
-
 
 def level_cols(prefix: str) -> list[str]:
     return [f"{prefix}_{i:02d}" for i in range(10)]
@@ -63,19 +61,17 @@ def drop_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def resample_book(df: pd.DataFrame, freq: str, *, backend: SnapshotBackend = "pandas") -> pd.DataFrame:
+def resample_book(df: pd.DataFrame, freq: str) -> pd.DataFrame:
     """Resample an MBP-10 DataFrame to a causal fixed-frequency snapshot grid.
 
     Each output timestamp is the *decision time* and contains only information
     observed at or before that timestamp. Gaps are forward-filled so every bar
     carries a valid LOB snapshot. Handles duplicate timestamps naturally.
     """
-    if backend == "pykx":
-        return resample_book_pykx(df, freq)
-    if backend != "pandas":
-        raise ValueError("snapshot backend must be 'pandas' or 'pykx'")
     if df.empty:
         return df
+    if int(pd.Timedelta(freq).value) <= 0:
+        raise ValueError("resample freq must be positive")
     df = df.copy()
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index, utc=True)
@@ -83,48 +79,47 @@ def resample_book(df: pd.DataFrame, freq: str, *, backend: SnapshotBackend = "pa
     return df.resample(freq, label="right", closed="right").last().ffill().dropna(how="all")
 
 
-def resample_book_pykx(df: pd.DataFrame, freq: str) -> pd.DataFrame:
-    """Resample with embedded kdb+ via PyKX, returning Pandas-parity bars.
+def _price_aware_ofi_component(price: pd.Series, size: pd.Series, *, side: Literal["bid", "ask"]) -> pd.Series:
+    """Cont-Kukanov signed OFI component for one book side/level."""
+    price = pd.to_numeric(price, errors="coerce")
+    size = pd.to_numeric(size, errors="coerce").fillna(0.0).clip(lower=0.0)
+    prev_price = price.shift()
+    prev_size = size.shift().fillna(0.0)
+    if side == "bid":
+        values = np.select(
+            [price > prev_price, price < prev_price],
+            [size, -prev_size],
+            default=size - prev_size,
+        )
+    else:
+        values = np.select(
+            [price < prev_price, price > prev_price],
+            [-size, prev_size],
+            default=prev_size - size,
+        )
+    out = pd.Series(values, index=size.index, dtype="float64").replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if len(out) > 0:
+        out.iloc[0] = 0.0
+    return out
 
-    PyKX is optional and licensed separately by KX. This backend is intended for
-    offline preprocessing/benchmarking, not for per-step environment calls.
-    """
-    try:
-        import pykx as kx  # type: ignore
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError("Install PyKX and configure a kdb+ license to use snapshot_backend='pykx'.") from exc
 
-    if df.empty:
-        return df
-
-    freq_ns = int(pd.Timedelta(freq).value)
-    if freq_ns <= 0:
-        raise ValueError("resample freq must be positive")
-
-    out_index_name = df.index.name
-    work = df.copy()
-    index = pd.DatetimeIndex(pd.to_datetime(work.index, utc=True))
-    bucket_col = "midmamba_bucket_ns"
-    ts_ns = index.asi8.astype(np.int64)
-    work[bucket_col] = ((ts_ns + freq_ns - 1) // freq_ns) * freq_ns
-    q_table = kx.toq(work.reset_index(drop=True))
-    kx.q["midmamba_quote_data"] = q_table
-
-    data_cols = [str(col) for col in work.columns if str(col) != bucket_col]
-    select_expr = ", ".join(f"{col}:last {col}" for col in data_cols)
-    query = (
-        f"select {select_expr} by {bucket_col} "
-        "from midmamba_quote_data"
+def _rth_time_features(index: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray]:
+    idx = pd.DatetimeIndex(index)
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    local = idx.tz_convert("America/New_York")
+    seconds = (
+        local.hour * 3600.0
+        + local.minute * 60.0
+        + local.second
+        + local.microsecond / 1_000_000.0
+        + local.nanosecond / 1_000_000_000.0
     )
-    bars = kx.q(query).pd()
-    if bars.empty:
-        return bars
-
-    bucket_ns = pd.to_numeric(bars.pop(bucket_col)).astype(np.int64)
-    bars.index = pd.DatetimeIndex(pd.to_datetime(bucket_ns, utc=True), name=out_index_name)
-    bars = bars.sort_index(kind="stable")
-    full_index = pd.date_range(bars.index[0], bars.index[-1], freq=freq, tz="UTC", name=out_index_name)
-    return bars.reindex(full_index).ffill().dropna(how="all")
+    open_seconds = 9.5 * 3600.0
+    session_seconds = 6.5 * 3600.0
+    phase = np.clip((seconds - open_seconds) / session_seconds, 0.0, 1.0)
+    angle = 2.0 * np.pi * phase
+    return np.sin(angle), np.cos(angle)
 
 
 def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -141,7 +136,10 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     bid_px_filled = bid_px.fillna(pd.DataFrame(np.broadcast_to(mid_arr, bid_px.shape), index=bid_px.index, columns=bid_px.columns))
     ask_px_filled = ask_px.fillna(pd.DataFrame(np.broadcast_to(mid_arr, ask_px.shape), index=ask_px.index, columns=ask_px.columns))
 
-    feat["mid_log_ret_1"] = np.log(mid).diff()
+    mid_log_ret = np.log(mid).diff()
+    feat["mid_log_ret_1"] = mid_log_ret
+    for w in (50, 200, 1000):
+        feat[f"rv_{w}"] = mid_log_ret.rolling(w, min_periods=2).std().fillna(0.0)
     feat["spread_bps_feat"] = df["spread_bps"]
     feat["l1_imbalance"] = (bid_sz["bid_sz_00"] - ask_sz["ask_sz_00"]) / (bid_sz["bid_sz_00"] + ask_sz["ask_sz_00"] + eps)
     feat["l1_log_size_skew"] = np.log1p(bid_sz["bid_sz_00"]) - np.log1p(ask_sz["ask_sz_00"])
@@ -152,12 +150,14 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     ask_ct_sum = ask_ct.sum(axis=1)
     feat["depth10_log_count_skew"] = np.log1p(bid_ct_sum) - np.log1p(ask_ct_sum)
 
-    # Queue imbalance and MLOFI-like size flow at each level.
+    # Queue imbalance and price-aware Cont-Kukanov MLOFI at each level.
     for i in range(10):
         bsz = bid_sz[f"bid_sz_{i:02d}"]
         asz = ask_sz[f"ask_sz_{i:02d}"]
         feat[f"depth_imbalance_l{i}"] = (bsz - asz) / (bsz + asz + eps)
-        feat[f"mlofi_l{i}"] = bsz.diff().fillna(0.0) - asz.diff().fillna(0.0)
+        bid_flow = _price_aware_ofi_component(bid_px_filled[f"bid_px_{i:02d}"], bsz, side="bid")
+        ask_flow = _price_aware_ofi_component(ask_px_filled[f"ask_px_{i:02d}"], asz, side="ask")
+        feat[f"mlofi_l{i}"] = bid_flow + ask_flow
 
     # Depth-profile shape features.
     feat["depth_slope_bid_0_4"] = np.log1p(bid_sz["bid_sz_00"]) - np.log1p(bid_sz["bid_sz_04"])
@@ -176,6 +176,7 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     dt_s = dt_us / 1_000_000.0
     for w in (50, 200, 1000):
         feat[f"arrival_rate_{w}"] = w / (dt_s.rolling(w, min_periods=1).sum() + eps)
+    feat["rth_time_sin"], feat["rth_time_cos"] = _rth_time_features(df.index)
 
     # Aggressor-side proxy from top-level queue thinning.
     bid_d = bid_sz["bid_sz_00"].diff().fillna(0.0)

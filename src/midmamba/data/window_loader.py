@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -7,7 +8,6 @@ import numpy as np
 import pandas as pd
 
 from midmamba.data.mbp10_features import (
-    SnapshotBackend,
     add_market_fields,
     apply_rth_filter,
     build_feature_frame,
@@ -77,6 +77,26 @@ class MBP10WindowLoader:
             self._passive_buy_flow[self._session_ends] = 0.0
             self._passive_sell_flow[self._session_ends] = 0.0
 
+    def to_array_loader(self, *, seed: int | None = None, copy: bool = False) -> MBP10ArrayWindowLoader:
+        """Return a DataFrame-free loader using this loader's precomputed arrays."""
+
+        def maybe_copy(arr: np.ndarray) -> np.ndarray:
+            return arr.copy() if copy else arr
+
+        return MBP10ArrayWindowLoader(
+            maybe_copy(self.features),
+            maybe_copy(self._bid_px),
+            maybe_copy(self._ask_px),
+            maybe_copy(self._bid_sz),
+            maybe_copy(self._ask_sz),
+            maybe_copy(self._mid),
+            maybe_copy(self._passive_buy_flow),
+            maybe_copy(self._passive_sell_flow),
+            feature_names=self.feature_names,
+            seed=seed,
+            session_ends=self._session_ends,
+        )
+
     def _crosses_session_boundary(self, start: int, n_steps: int) -> bool:
         """Return True if window [start, start+n_steps) spans an overnight gap."""
         if len(self._session_ends) == 0:
@@ -92,7 +112,6 @@ class MBP10WindowLoader:
         *,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
-        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -112,7 +131,7 @@ class MBP10WindowLoader:
         prepared = drop_invalid_rows(prepared).sort_index(kind="stable")
 
         if resample_freq is not None:
-            prepared = resample_book(prepared, resample_freq, backend=snapshot_backend)
+            prepared = resample_book(prepared, resample_freq)
 
         if len(prepared) < 2:
             raise ValueError("book must contain at least two valid MBP-10 rows")
@@ -134,7 +153,6 @@ class MBP10WindowLoader:
         sample_rows: int | None = None,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
-        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -153,7 +171,6 @@ class MBP10WindowLoader:
             _event_time_frame(df),
             feature_columns=feature_columns,
             resample_freq=resample_freq,
-            snapshot_backend=snapshot_backend,
             rth_start=rth_start,
             rth_end=rth_end,
             seed=seed,
@@ -169,7 +186,6 @@ class MBP10WindowLoader:
         max_chunks: int | None = None,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
-        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -182,7 +198,6 @@ class MBP10WindowLoader:
             max_chunks=max_chunks,
             feature_columns=feature_columns,
             resample_freq=resample_freq,
-            snapshot_backend=snapshot_backend,
             rth_start=rth_start,
             rth_end=rth_end,
             seed=seed,
@@ -199,7 +214,6 @@ class MBP10WindowLoader:
         max_chunks: int | None = None,
         feature_columns: Sequence[str] | None = None,
         resample_freq: str | None = None,
-        snapshot_backend: SnapshotBackend = "pandas",
         rth_start: str | None = None,
         rth_end: str | None = None,
         seed: int | None = None,
@@ -262,7 +276,7 @@ class MBP10WindowLoader:
                 file_book = drop_invalid_rows(file_book).sort_index(kind="stable")
 
                 if resample_freq is not None and len(file_book) > 0:
-                    file_book = resample_book(file_book, resample_freq, backend=snapshot_backend)
+                    file_book = resample_book(file_book, resample_freq)
 
                 if len(file_book) > 0:
                     feature_frame = _build_feature_frame_by_session(file_book)
@@ -282,6 +296,7 @@ class MBP10WindowLoader:
                     processed_features.append(feature_frame[names].to_numpy(dtype=np.float32, copy=True))
                     kept_rows += int(len(file_book))
                 del file_book
+                gc.collect()
 
             if hit_limit:
                 break
@@ -380,6 +395,179 @@ class MBP10WindowLoader:
             self._passive_buy_flow[start:end].copy(),
             self._passive_sell_flow[start:end].copy(),
         )
+
+
+class MBP10ArrayWindowLoader:
+    """DataFrame-free execution-window sampler backed by precomputed arrays.
+
+    This loader is intended for SB3 worker processes. It avoids rebuilding book
+    arrays and passive-touch flows from ``raw_lob`` in every worker.
+    """
+
+    def __init__(
+        self,
+        features: np.ndarray,
+        bid_px: np.ndarray,
+        ask_px: np.ndarray,
+        bid_sz: np.ndarray,
+        ask_sz: np.ndarray,
+        mid: np.ndarray,
+        passive_buy_flow: np.ndarray,
+        passive_sell_flow: np.ndarray,
+        *,
+        feature_names: Sequence[str] | None = None,
+        seed: int | None = None,
+        session_ends: Sequence[int] | None = None,
+    ) -> None:
+        self.features = _as_dtype_preserving_memmap(features, np.float32)
+        self._bid_px = _as_dtype_preserving_memmap(bid_px, np.float64)
+        self._ask_px = _as_dtype_preserving_memmap(ask_px, np.float64)
+        self._bid_sz = _as_dtype_preserving_memmap(bid_sz, np.float64)
+        self._ask_sz = _as_dtype_preserving_memmap(ask_sz, np.float64)
+        self._mid = _as_dtype_preserving_memmap(mid, np.float64)
+        self._passive_buy_flow = _as_dtype_preserving_memmap(passive_buy_flow, np.float64)
+        self._passive_sell_flow = _as_dtype_preserving_memmap(passive_sell_flow, np.float64)
+
+        if self.features.ndim != 2:
+            raise ValueError("features must have shape (n_rows, n_features)")
+        self.n_rows = int(self.features.shape[0])
+        if self.n_rows < 2:
+            raise ValueError("at least two rows are required for an execution window")
+        self.n_features = int(self.features.shape[1])
+        self.feature_names = list(feature_names or [f"feature_{i}" for i in range(self.n_features)])
+        if len(self.feature_names) != self.n_features:
+            raise ValueError("feature_names length must match features width")
+
+        expected_book_shape = (self.n_rows, 10)
+        for name, arr in (
+            ("bid_px", self._bid_px),
+            ("ask_px", self._ask_px),
+            ("bid_sz", self._bid_sz),
+            ("ask_sz", self._ask_sz),
+        ):
+            if arr.shape != expected_book_shape:
+                raise ValueError(f"{name} must have shape {expected_book_shape}, got {arr.shape}")
+        for name, arr in (
+            ("mid", self._mid),
+            ("passive_buy_flow", self._passive_buy_flow),
+            ("passive_sell_flow", self._passive_sell_flow),
+        ):
+            if arr.shape != (self.n_rows,):
+                raise ValueError(f"{name} must have shape {(self.n_rows,)}, got {arr.shape}")
+
+        self.rng = np.random.default_rng(seed)
+        self._session_ends = _validate_session_ends(session_ends, self.n_rows)
+        self._session_bounds = _session_bounds_from_ends(self._session_ends, self.n_rows)
+
+    def clone_with_seed(self, seed: int | None = None) -> MBP10ArrayWindowLoader:
+        """Return a new sampler sharing arrays but with an independent RNG."""
+
+        return MBP10ArrayWindowLoader(
+            self.features,
+            self._bid_px,
+            self._ask_px,
+            self._bid_sz,
+            self._ask_sz,
+            self._mid,
+            self._passive_buy_flow,
+            self._passive_sell_flow,
+            feature_names=self.feature_names,
+            seed=seed,
+            session_ends=self._session_ends,
+        )
+
+    def _crosses_session_boundary(self, start: int, n_steps: int) -> bool:
+        if len(self._session_ends) == 0:
+            return False
+        lo = np.searchsorted(self._session_ends, start, side="left")
+        hi = np.searchsorted(self._session_ends, start + n_steps - 2, side="right")
+        return lo < hi
+
+    def _resolve_start(self, n_steps: int, start: int | None) -> int:
+        if n_steps < 2:
+            raise ValueError("n_steps must be at least 2")
+        if n_steps > len(self.features):
+            raise ValueError(f"n_steps={n_steps} exceeds available rows={len(self.features)}")
+        if start is None:
+            valid_ranges = [
+                (lo, hi - n_steps)
+                for lo, hi in self._session_bounds
+                if hi - lo >= n_steps
+            ]
+            if not valid_ranges:
+                longest_session_rows = max((hi - lo for lo, hi in self._session_bounds), default=0)
+                raise ValueError(
+                    f"no single detected session contains n_steps={n_steps}; "
+                    f"longest_session_rows={longest_session_rows}"
+                )
+            counts = np.asarray([hi - lo + 1 for lo, hi in valid_ranges], dtype=np.int64)
+            draw = int(self.rng.integers(0, int(counts.sum())))
+            for (lo, _hi), count in zip(valid_ranges, counts, strict=True):
+                if draw < count:
+                    start = lo + draw
+                    break
+                draw -= int(count)
+        if start < 0 or start + n_steps > len(self.features):
+            raise ValueError("window start is out of bounds")
+        if self._crosses_session_boundary(start, n_steps):
+            raise ValueError("window crosses a detected session boundary")
+        return start
+
+    def resolve_start(self, n_steps: int, start: int | None = None) -> int:
+        return self._resolve_start(n_steps, start)
+
+    def sample_window_arrays(
+        self,
+        n_steps: int,
+        *,
+        start: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        start = self._resolve_start(n_steps, start)
+        end = start + n_steps
+        return (
+            self.features[start:end].copy(),
+            self._bid_px[start:end].copy(),
+            self._ask_px[start:end].copy(),
+            self._bid_sz[start:end].copy(),
+            self._ask_sz[start:end].copy(),
+            self._mid[start:end].copy(),
+        )
+
+    def sample_execution_window_arrays(
+        self,
+        n_steps: int,
+        *,
+        start: int | None = None,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        start = self._resolve_start(n_steps, start)
+        end = start + n_steps
+        return (
+            self.features[start:end].copy(),
+            self._bid_px[start:end].copy(),
+            self._ask_px[start:end].copy(),
+            self._bid_sz[start:end].copy(),
+            self._ask_sz[start:end].copy(),
+            self._mid[start:end].copy(),
+            self._passive_buy_flow[start:end].copy(),
+            self._passive_sell_flow[start:end].copy(),
+        )
+
+
+def _as_dtype_preserving_memmap(array: np.ndarray, dtype: np.dtype | type[np.floating]) -> np.ndarray:
+    out = np.asanyarray(array)
+    dtype = np.dtype(dtype)
+    if out.dtype != dtype:
+        out = out.astype(dtype, copy=False)
+    return out
 
 
 def _first_dataframe(value: object) -> pd.DataFrame:

@@ -33,12 +33,6 @@ def main() -> int:
     parser.add_argument("--max-chunks", type=int, default=None, help="Maximum number of DBN chunks to scan when --chunk-rows is set.")
     parser.add_argument("--window-steps", type=int, default=1_000, help="Contiguous replay rows to evaluate.")
     parser.add_argument("--resample-freq", default=None, help="Optional fixed-cadence resampling freq, e.g. '100ms' or '1s'.")
-    parser.add_argument(
-        "--snapshot-backend",
-        choices=["pandas", "pykx"],
-        default="pandas",
-        help="Backend for fixed-cadence LOB snapshots. PyKX requires a kdb+ license.",
-    )
     parser.add_argument("--start", type=int, default=0, help="Start row inside the sampled frame.")
     parser.add_argument("--random-start", action="store_true", help="Randomly choose a valid start row after filters.")
     parser.add_argument("--rth-only", action="store_true", help="Filter sampled rows to regular trading hours before windowing.")
@@ -81,7 +75,6 @@ def main() -> int:
                 dbn_file,
                 sample_rows=args.sample_rows,
                 resample_freq=args.resample_freq,
-                snapshot_backend=args.snapshot_backend,
                 rth_start=args.rth_start if args.rth_only else None,
                 rth_end=args.rth_end if args.rth_only else None,
                 seed=args.seed,
@@ -105,7 +98,6 @@ def main() -> int:
                 min_rows=args.window_steps,
                 max_chunks=args.max_chunks,
                 resample_freq=args.resample_freq,
-                snapshot_backend=args.snapshot_backend,
                 rth_start=args.rth_start if args.rth_only else None,
                 rth_end=args.rth_end if args.rth_only else None,
                 seed=args.seed,
@@ -160,7 +152,6 @@ def main() -> int:
         "max_chunks": args.max_chunks,
         "window_steps": args.window_steps,
         "resample_freq": args.resample_freq,
-        "snapshot_backend": args.snapshot_backend,
         "available_rows_after_filters": loader.n_rows,
         "start": start,
         "random_start": args.random_start,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,8 @@ class BaselineResult:
     remaining_inventory: float
     implementation_shortfall: float
     implementation_shortfall_bps: float
+    implementation_shortfall_with_opportunity: float
+    implementation_shortfall_with_opportunity_bps: float
     slippage_bps: float
     cash: float
     terminal_penalty_bps: float
@@ -33,6 +36,8 @@ class BaselineResult:
             "remaining_inventory": self.remaining_inventory,
             "implementation_shortfall": self.implementation_shortfall,
             "implementation_shortfall_bps": self.implementation_shortfall_bps,
+            "implementation_shortfall_with_opportunity": self.implementation_shortfall_with_opportunity,
+            "implementation_shortfall_with_opportunity_bps": self.implementation_shortfall_with_opportunity_bps,
             "slippage_bps": self.slippage_bps,
             "cash": self.cash,
             "terminal_penalty_bps": self.terminal_penalty_bps,
@@ -270,6 +275,12 @@ def _result(name: str, total_reward: float, steps: int, info: dict[str, Any]) ->
         remaining_inventory=float(info.get("remaining_inventory", info.get("inventory", 0.0))),
         implementation_shortfall=float(info["implementation_shortfall"]),
         implementation_shortfall_bps=float(info["implementation_shortfall_bps"]),
+        implementation_shortfall_with_opportunity=float(
+            info.get("implementation_shortfall_with_opportunity", info["implementation_shortfall"])
+        ),
+        implementation_shortfall_with_opportunity_bps=float(
+            info.get("implementation_shortfall_with_opportunity_bps", info["implementation_shortfall_bps"])
+        ),
         slippage_bps=float(info.get("slippage_bps", 0.0)),
         cash=float(info["cash"]),
         terminal_penalty_bps=float(info.get("terminal_penalty_bps", 0.0)),
@@ -284,4 +295,164 @@ def _ensure_time_index(frame: pd.DataFrame) -> pd.DataFrame:
             out = frame.copy()
             out.index = pd.DatetimeIndex(pd.to_datetime(out[col], utc=True), name=col)
             return out
-    return frame
+    out = frame.copy()
+    out.index = pd.date_range("1970-01-01", periods=len(out), freq="1s", tz="UTC", name="synthetic_time")
+    return out
+
+
+@dataclass(frozen=True)
+class BaselineDistribution:
+    """Aggregate of per-window baseline runs.
+
+    All list fields have length ``n_windows``. ``summary()`` produces mean/std/
+    95% CI half-width over windows so policy vs baseline comparisons are
+    statistically meaningful (same N, same windows when possible).
+    """
+
+    name: str
+    is_bps: list[float]
+    is_with_opportunity_bps: list[float]
+    filled_qty: list[float]
+    remaining_inventory: list[float]
+    total_reward: list[float]
+
+    @property
+    def n(self) -> int:
+        return len(self.is_bps)
+
+    def summary(self) -> dict[str, float]:
+        if self.n == 0:
+            return {"name": self.name, "n": 0}
+        arr = np.asarray(self.is_bps, dtype=np.float64)
+        opp_arr = np.asarray(self.is_with_opportunity_bps, dtype=np.float64)
+        mean = float(np.mean(arr))
+        std = float(np.std(arr, ddof=1)) if self.n > 1 else 0.0
+        half = 1.96 * std / np.sqrt(self.n) if self.n > 1 else 0.0
+        opp_mean = float(np.mean(opp_arr))
+        opp_std = float(np.std(opp_arr, ddof=1)) if self.n > 1 else 0.0
+        opp_half = 1.96 * opp_std / np.sqrt(self.n) if self.n > 1 else 0.0
+        return {
+            "name": self.name,
+            "n": int(self.n),
+            "is_bps_mean": mean,
+            "is_bps_std": std,
+            "is_bps_ci95_halfwidth": float(half),
+            "is_with_opportunity_bps_mean": opp_mean,
+            "is_with_opportunity_bps_std": opp_std,
+            "is_with_opportunity_bps_ci95_halfwidth": float(opp_half),
+            "filled_qty_mean": float(np.mean(self.filled_qty)),
+            "remaining_inventory_mean": float(np.mean(self.remaining_inventory)),
+            "reward_mean": float(np.mean(self.total_reward)),
+        }
+
+
+def run_baselines_over_windows(
+    loader: Any,
+    *,
+    n_windows: int,
+    n_steps: int,
+    side: Side = "buy",
+    parent_quantity: float = 1_000.0,
+    twap_slices: int = 10,
+    terminal_penalty_bps: float = 500.0,
+    ac_risk_aversion: float = 1e-6,
+    ac_volatility: float = 0.02,
+    ac_temporary_impact: float = 1.0,
+    include: tuple[str, ...] = ("immediate", "twap", "almgren_chriss"),
+    seed: int | None = None,
+    starts: Sequence[int] | None = None,
+) -> dict[str, BaselineDistribution]:
+    """Run each baseline over ``n_windows`` sampled windows from ``loader``.
+
+    Each iteration samples one window of ``n_steps`` rows from ``loader`` and
+    runs every requested baseline on that same window, so per-window noise is
+    paired across baselines. Returns a dict keyed by baseline name.
+    """
+    if n_windows <= 0:
+        raise ValueError("n_windows must be positive")
+    if n_steps < 2:
+        raise ValueError("n_steps must be at least 2")
+
+    if starts is not None and len(starts) != n_windows:
+        raise ValueError("starts length must equal n_windows")
+
+    if starts is None and seed is not None and hasattr(loader, "rng"):
+        loader.rng = np.random.default_rng(seed)
+
+    runners: dict[str, Any] = {}
+    if "immediate" in include:
+        runners["immediate"] = lambda book: run_immediate_execution(
+            book, side=side, parent_quantity=parent_quantity, terminal_penalty_bps=terminal_penalty_bps
+        )
+    if "twap" in include:
+        runners["twap"] = lambda book: run_twap_execution(
+            book,
+            side=side,
+            parent_quantity=parent_quantity,
+            n_slices=twap_slices,
+            terminal_penalty_bps=terminal_penalty_bps,
+        )
+    if "almgren_chriss" in include:
+        runners["almgren_chriss"] = lambda book: run_almgren_chriss_execution(
+            book,
+            side=side,
+            parent_quantity=parent_quantity,
+            n_slices=twap_slices,
+            risk_aversion=ac_risk_aversion,
+            volatility=ac_volatility,
+            temporary_impact=ac_temporary_impact,
+            terminal_penalty_bps=terminal_penalty_bps,
+        )
+
+    rows: dict[str, dict[str, list[float]]] = {
+        name: {
+            "is_bps": [],
+            "is_with_opportunity_bps": [],
+            "filled_qty": [],
+            "remaining_inventory": [],
+            "total_reward": [],
+        }
+        for name in runners
+    }
+
+    for i in range(n_windows):
+        start = None if starts is None else int(starts[i])
+        _, raw_lob = loader.sample_window(n_steps, start=start)
+        for name, runner in runners.items():
+            res = runner(raw_lob)
+            rows[name]["is_bps"].append(res.implementation_shortfall_bps)
+            rows[name]["is_with_opportunity_bps"].append(res.implementation_shortfall_with_opportunity_bps)
+            rows[name]["filled_qty"].append(res.filled_qty)
+            rows[name]["remaining_inventory"].append(res.remaining_inventory)
+            rows[name]["total_reward"].append(res.total_reward)
+
+    return {
+        name: BaselineDistribution(
+            name=name,
+            is_bps=cols["is_bps"],
+            is_with_opportunity_bps=cols["is_with_opportunity_bps"],
+            filled_qty=cols["filled_qty"],
+            remaining_inventory=cols["remaining_inventory"],
+            total_reward=cols["total_reward"],
+        )
+        for name, cols in rows.items()
+    }
+
+
+def sample_window_starts(
+    loader: Any,
+    *,
+    n_windows: int,
+    n_steps: int,
+    seed: int | None = None,
+) -> list[int]:
+    """Sample valid window starts once so policy and baselines can replay them."""
+    if n_windows <= 0:
+        raise ValueError("n_windows must be positive")
+    if n_steps < 2:
+        raise ValueError("n_steps must be at least 2")
+    if not hasattr(loader, "resolve_start"):
+        raise TypeError("loader must provide resolve_start(n_steps, start=None)")
+    if seed is not None and hasattr(loader, "rng"):
+        loader.rng = np.random.default_rng(seed)
+    return [int(loader.resolve_start(n_steps, None)) for _ in range(n_windows)]

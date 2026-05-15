@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -55,6 +57,38 @@ def test_sb3_rollout_logger_callback_can_instantiate() -> None:
     assert callback._on_step() is True
 
 
+def test_matching_vecnormalize_path_uses_checkpoint_stem(tmp_path) -> None:
+    from midmamba.rl import matching_vecnormalize_path
+
+    assert matching_vecnormalize_path(tmp_path / "agent_r000100.zip").name == "agent_r000100_vecnormalize.pkl"
+
+
+def test_compile_safe_checkpoint_callback_saves_matching_vecnormalize(tmp_path) -> None:
+    from midmamba.rl import CompileSafeCheckpointCallback
+
+    class DummyVecNormalize:
+        def save(self, path: str) -> None:
+            Path(path).write_text("stats")
+
+    class DummyModel:
+        def save(self, path: str) -> None:
+            Path(path).write_text("model")
+
+        def get_vec_normalize_env(self):
+            return DummyVecNormalize()
+
+    callback = CompileSafeCheckpointCallback(
+        save_every_rollouts=1,
+        save_dir=tmp_path,
+        name_prefix="agent",
+    )
+    callback.model = DummyModel()  # type: ignore[assignment]
+
+    assert callback._on_rollout_end() is True
+    assert (tmp_path / "agent_r000001.zip").read_text() == "model"
+    assert (tmp_path / "agent_r000001_vecnormalize.pkl").read_text() == "stats"
+
+
 def test_load_eval_vec_env_requires_trusted_vecnormalize(tmp_path) -> None:
     pytest.importorskip("stable_baselines3", reason="stable-baselines3 required")
     from midmamba.rl import load_eval_vec_env
@@ -79,6 +113,26 @@ def test_load_eval_vec_env_requires_trusted_vecnormalize(tmp_path) -> None:
             vecnorm_path=vecnorm_path,
             trust_vecnormalize=False,
         )
+
+
+def test_sb3_loader_payload_uses_memmap_without_raw_lob() -> None:
+    from midmamba.rl.sb3_train import _loader_payload, _NpyMemmapSpec
+
+    loader = MBP10WindowLoader.from_book(_book(32), seed=3)
+    payload, store = _loader_payload(loader, use_memmap=True)
+
+    assert store is not None
+    assert isinstance(payload.features, _NpyMemmapSpec)
+    worker_loader = payload.make_loader(seed=4)
+
+    assert not hasattr(worker_loader, "raw_lob")
+    assert isinstance(worker_loader.features, np.memmap)
+    assert worker_loader.feature_names == loader.feature_names
+
+    original = loader.sample_execution_window_arrays(8, start=5)
+    worker = worker_loader.sample_execution_window_arrays(8, start=5)
+    for left, right in zip(original, worker, strict=True):
+        np.testing.assert_allclose(left, right)
 
 
 def test_sb3_autocast_policy_short_learn_smoke() -> None:

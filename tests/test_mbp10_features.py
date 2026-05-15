@@ -43,6 +43,11 @@ def test_build_feature_frame_contains_stationary_lob_features() -> None:
         "l1_log_size_skew",
         "depth10_log_count_skew",
         "depth10_imbalance",
+        "rv_50",
+        "rv_200",
+        "rv_1000",
+        "rth_time_sin",
+        "rth_time_cos",
         "bid_px_00_rel_mid",
         "ask_px_09_rel_mid",
         "log1p_bid_sz_00",
@@ -55,6 +60,50 @@ def test_build_feature_frame_contains_stationary_lob_features() -> None:
     assert "weighted_mid" not in features.columns
     assert "micro_price_rel_mid" in features.columns
     assert "weighted_mid_rel_mid" in features.columns
+
+
+def test_build_feature_frame_uses_price_aware_mlofi() -> None:
+    df = _sample_mbp10_frame(3)
+    df["ask_px_00"] = [500.03, 500.03, 500.03]
+    df["ask_sz_00"] = [200.0, 200.0, 200.0]
+    df["bid_px_00"] = [500.00, 500.01, 500.00]
+    df["bid_sz_00"] = [100.0, 150.0, 80.0]
+
+    features = build_feature_frame(add_market_fields(df))
+
+    assert features.iloc[0]["mlofi_l0"] == 0.0
+    assert features.iloc[1]["mlofi_l0"] == pytest.approx(150.0)
+    assert features.iloc[2]["mlofi_l0"] == pytest.approx(-150.0)
+
+
+def test_build_feature_frame_ask_mlofi_uses_price_moves() -> None:
+    df = _sample_mbp10_frame(3)
+    df["bid_px_00"] = [500.00, 500.00, 500.00]
+    df["bid_sz_00"] = [100.0, 100.0, 100.0]
+    df["ask_px_00"] = [500.04, 500.03, 500.05]
+    df["ask_sz_00"] = [200.0, 250.0, 90.0]
+
+    features = build_feature_frame(add_market_fields(df))
+
+    assert features.iloc[0]["mlofi_l0"] == 0.0
+    assert features.iloc[1]["mlofi_l0"] == pytest.approx(-250.0)
+    assert features.iloc[2]["mlofi_l0"] == pytest.approx(250.0)
+
+
+def test_build_feature_frame_realized_vol_and_rth_time_features() -> None:
+    df = _sample_mbp10_frame(8)
+    mids = np.array([500.005, 500.025, 499.995, 500.035, 500.015, 500.055, 500.005, 500.045])
+    df["bid_px_00"] = mids - 0.005
+    df["ask_px_00"] = mids + 0.005
+
+    features = build_feature_frame(add_market_fields(df))
+
+    assert features["rv_50"].iloc[0] == 0.0
+    assert features["rv_50"].iloc[-1] > 0.0
+    assert features["rv_200"].iloc[-1] > 0.0
+    assert features["rv_1000"].iloc[-1] > 0.0
+    assert features["rth_time_sin"].iloc[0] == pytest.approx(0.0)
+    assert features["rth_time_cos"].iloc[0] == pytest.approx(1.0)
 
 
 def test_build_feature_frame_handles_sparse_deep_book_levels() -> None:
@@ -105,7 +154,7 @@ def test_resample_book_pandas_backend_forward_fills_snapshot_grid() -> None:
         name="ts_recv",
     )
 
-    out = resample_book(df, "1s", backend="pandas")
+    out = resample_book(df, "1s")
 
     assert len(out) == 6
     assert out.index[3] == pd.Timestamp("2025-10-01 13:30:03+00:00")
@@ -125,16 +174,16 @@ def test_resample_book_is_right_labeled_and_causal() -> None:
     df["ts_recv"] = df.index
     df.loc[df.index[1], "bid_sz_00"] = 999_999.0
 
-    out = resample_book(df, "100ms", backend="pandas")
+    out = resample_book(df, "100ms")
 
     assert out.index[0] == pd.Timestamp("2025-10-01 13:30:00.100+00:00")
     assert out.iloc[0]["bid_sz_00"] != 999_999.0
     assert out.loc[pd.Timestamp("2025-10-01 13:30:00.200+00:00"), "bid_sz_00"] == 102.0
 
 
-def test_resample_book_reports_unknown_backend() -> None:
-    with pytest.raises(ValueError, match="snapshot backend"):
-        resample_book(_sample_mbp10_frame(), "1s", backend="duckdb")  # type: ignore[arg-type]
+def test_resample_book_reports_non_positive_freq() -> None:
+    with pytest.raises(ValueError, match="resample freq must be positive"):
+        resample_book(_sample_mbp10_frame(), "0s")
 
 
 def test_drop_invalid_rows_and_book_integrity_report() -> None:

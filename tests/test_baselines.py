@@ -4,11 +4,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from midmamba.data import MBP10WindowLoader
 from midmamba.eval import (
     almgren_chriss_schedule,
     run_almgren_chriss_execution,
+    run_baselines_over_windows,
     run_immediate_execution,
     run_twap_execution,
+    sample_window_starts,
 )
 
 
@@ -35,7 +38,11 @@ def test_immediate_execution_fills_parent_order_in_one_step() -> None:
     assert result.remaining_inventory == pytest.approx(0.0)
     assert result.terminal_penalty_bps == pytest.approx(0.0)
     assert result.implementation_shortfall_bps > 0.0
+    assert result.implementation_shortfall_with_opportunity_bps == pytest.approx(
+        result.implementation_shortfall_bps,
+    )
     assert result.to_dict()["name"] == "immediate"
+    assert "implementation_shortfall_with_opportunity_bps" in result.to_dict()
 
 
 def test_twap_execution_slices_parent_order_across_window() -> None:
@@ -104,3 +111,28 @@ def test_almgren_chriss_accepts_sampled_range_index_with_timestamp_columns() -> 
 
     assert result.name == "almgren_chriss"
     assert result.filled_qty == pytest.approx(100.0)
+
+
+def test_baseline_distributions_can_replay_fixed_window_starts() -> None:
+    loader = MBP10WindowLoader.from_book(_book(12), seed=123)
+
+    starts = sample_window_starts(loader, n_windows=4, n_steps=4, seed=7)
+    dists = run_baselines_over_windows(
+        loader,
+        n_windows=4,
+        n_steps=4,
+        parent_quantity=100.0,
+        starts=starts,
+    )
+
+    assert len(starts) == 4
+    assert set(dists) == {"immediate", "twap", "almgren_chriss"}
+    assert all(dist.n == 4 for dist in dists.values())
+    assert all("is_with_opportunity_bps_mean" in dist.summary() for dist in dists.values())
+
+
+def test_baseline_distributions_validate_fixed_start_count() -> None:
+    loader = MBP10WindowLoader.from_book(_book(12), seed=123)
+
+    with pytest.raises(ValueError, match="starts length"):
+        run_baselines_over_windows(loader, n_windows=3, n_steps=4, starts=[0, 1])

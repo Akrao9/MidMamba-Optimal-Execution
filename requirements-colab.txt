@@ -10,7 +10,8 @@ databento
 gymnasium
 mamba-ssm
 matplotlib
-numba>=0.62.0
+# Pin below 0.62 so RAPIDS cudf/cuml 26.x (numba<0.62) can coexist if present.
+numba>=0.60.0,<0.62.0
 numpy
 pandas
 pyarrow

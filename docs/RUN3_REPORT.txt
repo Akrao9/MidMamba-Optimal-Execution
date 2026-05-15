@@ -1,0 +1,496 @@
+MidMamba PPO Run 3 Report
+Created: 2026-05-15
+
+Purpose
+-------
+This report records the third full Stable-Baselines3 PPO training experiment
+for MidMamba. Run 3 was the first full run after correcting the execution
+accounting issue discovered in Run 2.
+
+Run 3 focused on completion discipline:
+  - The final step was changed to attempt marketable liquidation of all
+    remaining visible inventory.
+  - Terminal and completion penalties were changed so they are not clipped away
+    by REWARD_CLIP.
+  - Evaluation was changed to report IS+opp, which marks leftover inventory to
+    the final mid price.
+
+The result is a cleaner execution policy with much better completion, but it
+does not yet outperform TWAP on the corrected March held-out metric.
+
+Run 3 Goal
+----------
+Primary goal:
+  Fix the incomplete-execution problem from Run 2 while keeping the policy
+  competitive versus TWAP on held-out March 2025 data.
+
+Run 2 problem being addressed:
+  Run 2 had apparently strong raw implementation shortfall, but after corrected
+  opportunity-cost accounting it left too much inventory unfinished.
+
+Corrected Run 2 reference:
+  Policy raw IS:   -1.0325 bps
+  Policy IS+opp:  +0.5454 bps
+  Mean filled:    88,361
+  Mean remaining: 11,638.9071
+
+Data Split
+----------
+Training:
+  January 2025 plus February 2025 before 2025-02-24.
+
+Validation:
+  February 2025 from 2025-02-24 onward.
+
+Test:
+  March 2025 held out until after training.
+
+Market hours:
+  Regular trading hours only, 09:30:00 to 16:00:00 America/New_York.
+
+Sampling:
+  5-second causal MBP-10 snapshots.
+
+Execution horizon:
+  360 steps, equal to 30 minutes at 5 seconds per step.
+
+Feature Set
+-----------
+Test feature count:
+  141
+
+Feature notes:
+  The run used the updated MBP-10 feature stack with price-aware MLOFI,
+  realized volatility, RTH time-of-day encoding, and the synchronized codebase
+  containing the corrected terminal-inventory accounting.
+
+Accounting Fixes Before Run
+---------------------------
+Final liquidation:
+  On the final environment step, the policy must attempt to execute all
+  remaining visible inventory with a marketable action.
+
+Reward clipping:
+  REWARD_CLIP applies only to the shaped IS/schedule reward component.
+  Completion and terminal penalties bypass the clip.
+
+Corrected evaluation metric:
+  IS+opp = realized implementation shortfall plus opportunity shortfall from
+  remaining inventory marked to the final mid price.
+
+Why this matters:
+  Raw IS can look good when the policy avoids trading difficult inventory.
+  IS+opp penalizes that behavior and is the headline metric used for this run.
+
+Core PPO Hyperparameters
+------------------------
+NUM_ENVS:
+  96
+
+ROLLOUT_STEPS:
+  512
+
+UPDATES configured:
+  1000
+
+TOTAL_TIMESTEPS configured:
+  49,152,000
+
+Training stopped at:
+  Approximately 45,416,448 timesteps after validation stopped improving and
+  the learning rate had decayed to about 1.47e-07.
+
+Rollout buffer:
+  49,152 steps per PPO update.
+
+N_EPOCHS:
+  4
+
+BATCH_SIZE:
+  8192
+
+Minibatches per epoch:
+  6
+
+Learning rate:
+  1e-5
+
+LR schedule:
+  cosine
+
+LR_WARMUP:
+  6 rollout units, equal to 294,912 timesteps.
+
+CLIP_COEF:
+  0.1
+
+TARGET_KL:
+  0.03
+
+GAMMA:
+  0.995
+
+GAE_LAMBDA:
+  0.95
+
+ENTROPY_COEF:
+  0.0003
+
+MAX_GRAD_NORM:
+  0.5
+
+Policy / Model Hyperparameters
+------------------------------
+BACKEND:
+  mamba
+
+D_MODEL:
+  192
+
+N_LAYERS:
+  3
+
+SEQ_LEN:
+  128
+
+SPATIAL_STEM:
+  True
+
+NET_ARCH:
+  pi=[256, 256], vf=[256, 256]
+
+DROPOUT:
+  0.0
+
+USE_BF16:
+  True
+
+USE_TORCH_COMPILE:
+  True
+
+TORCH_COMPILE_MODE:
+  default
+
+USE_NUMBA:
+  True
+
+Execution / Reward Hyperparameters
+----------------------------------
+SIDE:
+  buy
+
+PARENT_QUANTITY:
+  100,000
+
+FILL_MODEL during training:
+  random
+
+FILL_MODEL during final policy evaluation:
+  proportional
+
+BETA_IS:
+  1.0
+
+BETA_SCHEDULE:
+  0.1
+
+BETA_COMPLETION:
+  4.0
+
+TERMINAL_PENALTY_BPS:
+  500.0
+
+REWARD_CLIP:
+  5.0
+
+NORM_REWARD:
+  True
+
+Transaction Costs
+-----------------
+TAKER_FEE_BPS:
+  2.0
+
+MAKER_REBATE_BPS:
+  0.5
+
+Validation / Checkpointing
+--------------------------
+EVAL_EPISODES:
+  200
+
+EVAL_EVERY_ROLLOUTS:
+  12
+
+Evaluation interval:
+  589,824 timesteps.
+
+CHECKPOINT_EVERY:
+  50
+
+Checkpoint interval:
+  2,457,600 timesteps.
+
+Best validation checkpoint:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model.zip
+
+Best VecNormalize stats:
+  /content/drive/MyDrive/midmamba/checkpoints/best/best_model_vecnormalize.pkl
+
+Final checkpoint:
+  /content/drive/MyDrive/midmamba/checkpoints/mamba_ppo.zip
+
+Training metrics:
+  /content/drive/MyDrive/midmamba/results/ppo_training_metrics.json
+
+Validation Results
+------------------
+Initial validation result:
+  Eval num_timesteps=589824, episode_reward=-71.22 +/- 55.63
+  Episode length: 359.06 +/- 2.51
+
+Early improvement:
+  Eval num_timesteps=7077888, episode_reward=-4.82 +/- 28.72
+  Episode length: 314.31 +/- 34.73
+
+Best validation result:
+  Eval num_timesteps=34209792, episode_reward=-1.88 +/- 17.83
+  Episode length: 270.81 +/- 65.79
+
+Best validation timestep:
+  34,209,792
+
+Later validation behavior:
+  No new best was observed after 34.21M timesteps. The final observed
+  validation reward before stopping was worse while the learning rate had nearly
+  decayed to zero.
+
+Final observed validation before stopping:
+  Eval num_timesteps=45416448, episode_reward=-4.96 +/- 22.33
+  Episode length: 281.18 +/- 65.03
+
+Training diagnostics near the stop point:
+  approx_kl: 6.9763344e-05
+  clip_fraction: 0.000356
+  explained_variance: 0.978
+  learning_rate: 1.47e-07
+  std: 0.298
+  fps: about 1287 near the best validation region
+
+Validation interpretation:
+  The run successfully learned the stricter completion penalty. Validation
+  reward improved from -71.22 to -1.88, and mean episode length fell from about
+  359 steps to about 271 steps at the best checkpoint.
+
+March Held-Out Test Setup
+-------------------------
+Test data:
+  March 2025, 20 files.
+
+Test loader:
+  93,600 rows.
+
+Feature count:
+  141.
+
+Evaluation windows:
+  200 paired March windows.
+
+Window length:
+  360 steps.
+
+Checkpoint used:
+  Best validation checkpoint selected on February validation.
+
+Corrected metric:
+  IS+opp, not raw IS, is the headline metric.
+
+Baseline Results, Corrected IS+opp
+----------------------------------
+immediate:
+  IS+opp mean bps: 0.031
+  95 pct CI halfwidth: 0.001
+  IS+opp std: 0.010
+  mean filled quantity: 3,304
+
+twap:
+  IS+opp mean bps: 0.172
+  95 pct CI halfwidth: 1.217
+  IS+opp std: 8.782
+  mean filled quantity: 99,964
+
+almgren_chriss:
+  IS+opp mean bps: 0.178
+  95 pct CI halfwidth: 1.217
+  IS+opp std: 8.781
+  mean filled quantity: 100,000
+
+Policy Test Results
+-------------------
+Policy reward:
+  -16.3544 +/- 55.5274
+
+Policy raw IS mean:
+  +0.7729 bps
+
+Policy raw IS std:
+  17.3588 bps
+
+Policy corrected IS+opp mean:
+  +0.8916 bps
+
+Policy corrected IS+opp std:
+  18.510 bps
+
+Policy corrected IS+opp 95 pct CI halfwidth:
+  2.565 bps
+
+Mean filled quantity:
+  98,695
+
+Mean remaining inventory:
+  1,304.5602
+
+Fees:
+  1.4029 bps
+
+Paired Policy Differences, Corrected IS+opp
+-------------------------------------------
+Policy vs immediate:
+  diff: +0.861 bps
+  95 pct CI halfwidth: 2.565
+  win rate: 51.5 pct
+
+Policy vs twap:
+  diff: +0.720 bps
+  95 pct CI halfwidth: 2.027
+  win rate: 48.0 pct
+
+Policy vs almgren_chriss:
+  diff: +0.714 bps
+  95 pct CI halfwidth: 2.027
+  win rate: 48.0 pct
+
+Run 2 vs Run 3 Completion Comparison
+------------------------------------
+Corrected Run 2 mean filled quantity:
+  88,361
+
+Run 3 mean filled quantity:
+  98,695
+
+Result:
+  Run 3 filled about 10,334 more units on average.
+
+Corrected Run 2 mean remaining inventory:
+  11,638.9071
+
+Run 3 mean remaining inventory:
+  1,304.5602
+
+Result:
+  Run 3 reduced average remaining inventory by about 10,334 units.
+
+Corrected Run 2 policy IS+opp:
+  +0.5454 bps
+
+Run 3 policy IS+opp:
+  +0.8916 bps
+
+Result:
+  Run 3 improved completion materially, but worsened corrected March IS+opp by
+  about 0.3462 bps.
+
+Run 3 Acceptance Target Check
+-----------------------------
+filled_mean >= 99,000:
+  Slightly failed. Observed 98,695.
+
+remaining_mean <= 1,000:
+  Slightly failed. Observed 1,304.5602.
+
+paired policy - TWAP < 0 bps on IS+opp:
+  Failed. Observed +0.720 bps.
+
+win_rate_vs_twap > 55 pct:
+  Failed. Observed 48.0 pct.
+
+corrected raw-vs-IS+opp gap small:
+  Passed. Raw IS was +0.7729 bps and IS+opp was +0.8916 bps.
+
+Interpretation
+--------------
+Run 3 is a successful accounting and completion fix, but not a profitable or
+outperforming execution policy on held-out March data.
+
+Positive signs:
+  - The policy no longer wins by leaving large inventory unfinished.
+  - Mean remaining inventory fell from about 11.6 pct in corrected Run 2 to
+    about 1.3 pct in Run 3.
+  - The raw IS and corrected IS+opp metrics are now close, which means the
+    reported execution quality is no longer dominated by hidden leftover
+    inventory.
+  - PPO training was stable with 96 environments and reached about 1287 fps.
+  - The validation curve improved strongly under the stricter reward.
+
+Main failure:
+  On March held-out data, the policy underperformed TWAP on corrected IS+opp by
+  about +0.720 bps and had a 48.0 pct win rate versus TWAP.
+
+Statistical caveat:
+  The paired difference versus TWAP has a 95 pct CI halfwidth of about 2.027
+  bps, so the policy is not statistically proven worse either. The honest
+  conclusion is no reliable held-out edge.
+
+Portfolio Framing
+-----------------
+Run 3 should be presented as an important negative/diagnostic result:
+
+  After correcting the inventory accounting, the agent learned to complete the
+  order much more reliably. However, once evaluated with opportunity cost for
+  residual inventory, the best validation checkpoint did not outperform TWAP on
+  the March held-out set.
+
+This is valuable for a portfolio project because it demonstrates:
+  - Proper train / validation / test separation.
+  - Recognition and correction of a reward-accounting loophole.
+  - Paired baseline evaluation.
+  - Honest reporting when a model does not beat a simple benchmark.
+
+Recommended Next Experiment
+---------------------------
+Do not continue this exact run. The learning rate was nearly exhausted and the
+best checkpoint had already been selected.
+
+Recommended Run 4 direction:
+  Keep the completion fixes and strong terminal accounting, but reduce schedule
+  pressure so the policy has more freedom to use passive or opportunistic fills
+  while still being forced to finish.
+
+Suggested settings:
+  NUM_ENVS = 96
+  ROLLOUT_STEPS = 512
+  BATCH_SIZE = 8192
+  N_EPOCHS = 4
+  BETA_IS = 1.0
+  BETA_SCHEDULE = 0.03
+  BETA_COMPLETION = 4.0
+  TERMINAL_PENALTY_BPS = 500.0
+  REWARD_CLIP = 5.0
+  EVAL_EVERY_ROLLOUTS = 12
+  CHECKPOINT_EVERY = 50
+
+Run 4 acceptance criteria:
+  filled_mean >= 99,000
+  remaining_mean <= 1,000
+  policy IS+opp <= TWAP IS+opp
+  paired policy - TWAP <= 0 bps
+  win_rate_vs_twap >= 55 pct
+
+Conclusion
+----------
+Run 3 fixed the major completion-accounting flaw from Run 2 and produced a
+substantially more honest execution policy. It did not beat TWAP on the
+corrected March held-out test, so it should not be described as profitable.
+The next experiment should focus on recovering shortfall edge without reopening
+the incomplete-execution loophole.

@@ -291,6 +291,15 @@ def _validate_fill_model(fill_model: str) -> FillModel:
     return fill_model  # type: ignore[return-value]
 
 
+def _opportunity_shortfall(side: Side, arrival_price: float, mark_price: float, quantity: float) -> float:
+    qty = max(float(quantity), 0.0)
+    if qty <= 0:
+        return 0.0
+    if side == "buy":
+        return (float(mark_price) - float(arrival_price)) * qty
+    return (float(arrival_price) - float(mark_price)) * qty
+
+
 def resolve_fill_model(fill_model: FillModelSpec, rng: np.random.Generator) -> FillModel:
     if isinstance(fill_model, str):
         if fill_model == "random":
@@ -557,6 +566,13 @@ class MBP10ExecutionEnv(gym.Env):
                 slippage = (mid_now - self.last_fill_price) * self.last_fill_qty
 
         denom = max(self.arrival_mid * self.parent_quantity, 1e-9)
+        opportunity_shortfall = _opportunity_shortfall(
+            self.side,
+            self.arrival_mid,
+            mid_now,
+            self.remaining_inventory,
+        )
+        shortfall_with_opportunity = self.cumulative_shortfall + opportunity_shortfall
         return {
             "side": self.side,
             "row": int(self.i),
@@ -573,6 +589,10 @@ class MBP10ExecutionEnv(gym.Env):
             "slippage_bps": float(slippage / denom * 1e4),
             "implementation_shortfall": float(self.cumulative_shortfall),
             "implementation_shortfall_bps": float(self.cumulative_shortfall / denom * 1e4),
+            "opportunity_shortfall": float(opportunity_shortfall),
+            "opportunity_shortfall_bps": float(opportunity_shortfall / denom * 1e4),
+            "implementation_shortfall_with_opportunity": float(shortfall_with_opportunity),
+            "implementation_shortfall_with_opportunity_bps": float(shortfall_with_opportunity / denom * 1e4),
         }
 
 
@@ -679,18 +699,32 @@ class MidMambaExecutionEnv(gym.Env):
         self.initial_inventory = float(opts.get("initial_inventory", self._default_initial_inventory))
         if self.initial_inventory <= 0:
             raise ValueError("initial_inventory must be positive")
+        start = opts.get("start", opts.get("window_start"))
+        start = None if start is None else int(start)
 
         if hasattr(self.dataloader, "sample_execution_window_arrays"):
-            (
-                features,
-                bid_px,
-                ask_px,
-                bid_sz,
-                ask_sz,
-                mid,
-                passive_buy_flow,
-                passive_sell_flow,
-            ) = self.dataloader.sample_execution_window_arrays(self.max_steps)
+            if start is None:
+                (
+                    features,
+                    bid_px,
+                    ask_px,
+                    bid_sz,
+                    ask_sz,
+                    mid,
+                    passive_buy_flow,
+                    passive_sell_flow,
+                ) = self.dataloader.sample_execution_window_arrays(self.max_steps)
+            else:
+                (
+                    features,
+                    bid_px,
+                    ask_px,
+                    bid_sz,
+                    ask_sz,
+                    mid,
+                    passive_buy_flow,
+                    passive_sell_flow,
+                ) = self.dataloader.sample_execution_window_arrays(self.max_steps, start=start)
             self.current_window_features = features
             self._bid_px = bid_px
             self._ask_px = ask_px
@@ -700,7 +734,13 @@ class MidMambaExecutionEnv(gym.Env):
             self._passive_buy_flow = passive_buy_flow
             self._passive_sell_flow = passive_sell_flow
         elif hasattr(self.dataloader, "sample_window_arrays"):
-            features, bid_px, ask_px, bid_sz, ask_sz, mid = self.dataloader.sample_window_arrays(self.max_steps)
+            if start is None:
+                features, bid_px, ask_px, bid_sz, ask_sz, mid = self.dataloader.sample_window_arrays(self.max_steps)
+            else:
+                features, bid_px, ask_px, bid_sz, ask_sz, mid = self.dataloader.sample_window_arrays(
+                    self.max_steps,
+                    start=start,
+                )
             self.current_window_features = features
             self._bid_px = bid_px
             self._ask_px = ask_px
@@ -709,7 +749,10 @@ class MidMambaExecutionEnv(gym.Env):
             self._mid = mid
             self._passive_buy_flow, self._passive_sell_flow = _passive_touch_flows_np(bid_px, bid_sz, ask_px, ask_sz)
         else:
-            features, raw_lob = self.dataloader.sample_window(self.max_steps)
+            if start is None:
+                features, raw_lob = self.dataloader.sample_window(self.max_steps)
+            else:
+                features, raw_lob = self.dataloader.sample_window(self.max_steps, start=start)
             features_arr = np.asarray(features, dtype=np.float32)
             if features_arr.shape != (self.max_steps, self.n_features):
                 raise ValueError(
@@ -753,16 +796,22 @@ class MidMambaExecutionEnv(gym.Env):
         action_arr = np.clip(action_arr, -1.0, 1.0)
         # Cumulative TWAP-relative target. A zero size action follows TWAP exactly,
         # -1 waits, and +1 can move up to twice as fast while still targeting a
-        # valid inventory trajectory. On the final step, action[0] >= 0 targets
-        # full completion.
-        twap_next_frac = (self.current_step + 1) / self.max_steps
-        target_cum_frac = float(np.clip(twap_next_frac * (action_arr[0] + 1.0), 0.0, 1.0))
-        target_cum_qty = target_cum_frac * self.initial_inventory
-        target_qty = min(self.inventory, max(0.0, target_cum_qty - self.filled_qty))
-        aggressiveness = float(action_arr[1])
-
+        # valid inventory trajectory. On the final step, the agent must attempt
+        # to liquidate all remaining visible inventory; terminal completion is a
+        # constraint, not an optional timing choice.
         t = self.current_step
         is_last_step = (t >= self.max_steps - 1)
+        twap_next_frac = (self.current_step + 1) / self.max_steps
+        aggressiveness = float(action_arr[1])
+        if is_last_step:
+            target_cum_frac = 1.0
+            target_qty = self.inventory
+            aggressiveness = 1.0
+        else:
+            target_cum_frac = float(np.clip(twap_next_frac * (action_arr[0] + 1.0), 0.0, 1.0))
+            target_cum_qty = target_cum_frac * self.initial_inventory
+            target_qty = min(self.inventory, max(0.0, target_cum_qty - self.filled_qty))
+
         fill = FillResult(0.0, target_qty, 0.0, 0.0, 0)
         is_passive = False
         if target_qty > 0:
@@ -815,15 +864,10 @@ class MidMambaExecutionEnv(gym.Env):
             completion_penalty = self.beta_completion * self.sigma_step_bps * sqrt_horizon * remaining_frac
             terminal_penalty = self.terminal_penalty_bps * remaining_frac
 
-        reward = -(
-            self.beta_is * (-is_reward_bps)
-            + schedule_penalty
-            + completion_penalty
-            + terminal_penalty
-        )
-
+        shaped_reward = self.beta_is * is_reward_bps - schedule_penalty
         if self.reward_clip > 0:
-            reward = max(-self.reward_clip, min(self.reward_clip, reward))
+            shaped_reward = max(-self.reward_clip, min(self.reward_clip, shaped_reward))
+        reward = shaped_reward - completion_penalty - terminal_penalty
 
         obs = self._get_obs()
         info = self._info(t_exec, fill.filled_qty, fill.avg_price, fill.levels_touched, terminal_penalty)
@@ -831,6 +875,7 @@ class MidMambaExecutionEnv(gym.Env):
         info["reward_schedule_penalty"] = float(schedule_penalty)
         info["reward_completion_penalty"] = float(completion_penalty)
         info["reward_terminal_penalty"] = float(terminal_penalty)
+        info["reward_shaped_after_clip"] = float(shaped_reward)
         info["sigma_step_bps"] = float(self.sigma_step_bps)
         info["schedule_deviation"] = float(schedule_dev)
         info["target_qty"] = float(target_qty)
@@ -899,6 +944,8 @@ class MidMambaExecutionEnv(gym.Env):
                 slippage = (mid_now - avg_exec_price) * executed_shares
 
         denom = max(self.arrival_price * self.initial_inventory, 1e-9)
+        opportunity_shortfall = _opportunity_shortfall(self.side, self.arrival_price, mid_now, self.inventory)
+        shortfall_with_opportunity = self.cumulative_shortfall + opportunity_shortfall
         return {
             "side": self.side,
             "step": int(t),
@@ -917,6 +964,10 @@ class MidMambaExecutionEnv(gym.Env):
             "slippage_bps": float(slippage / denom * 1e4),
             "implementation_shortfall": float(self.cumulative_shortfall),
             "implementation_shortfall_bps": float(self.cumulative_shortfall / denom * 1e4),
+            "opportunity_shortfall": float(opportunity_shortfall),
+            "opportunity_shortfall_bps": float(opportunity_shortfall / denom * 1e4),
+            "implementation_shortfall_with_opportunity": float(shortfall_with_opportunity),
+            "implementation_shortfall_with_opportunity_bps": float(shortfall_with_opportunity / denom * 1e4),
             "cumulative_fees": float(self.cumulative_fees),
             "cumulative_fees_bps": float(self.cumulative_fees / denom * 1e4),
             "terminal_penalty_bps": float(terminal_penalty_bps),

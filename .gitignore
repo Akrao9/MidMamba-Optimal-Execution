@@ -14,20 +14,11 @@ build/
 .vscode/
 .claude/
 
-# Large / generated (keep manifests; ignore bulk DBN if you copy them here)
-data/**/*.dbn.zst
+# Large/local market data
+/data/
 
-# Large generated artifacts (keep small JSON if you want them in git)
-results/**/_intermediate/
-results/**/datasets/*.parquet
-results/**/models/
-results/**/checkpoints/
-results/baseline_smoke*.json
-results/baseline_*_local.json
-results/ppo_smoke*.json
-results/ppo_*_local.json
-results/eval*_local.json
-results/*eval*_local.json
+# Generated run artifacts
+results/
 colab_logs/
 *.log
 

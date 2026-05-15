@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 import sys
+import tempfile
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ from midmamba.env import MidMambaExecutionEnv
 
 try:
     from stable_baselines3 import PPO
-    from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
     from stable_baselines3.common.vec_env import (
         DummyVecEnv,
         SubprocVecEnv,
@@ -61,6 +63,111 @@ class SB3RolloutLoggerCallback(BaseCallback):
         return True
 
 
+class CompileSafeCheckpointCallback(BaseCallback):
+    """Periodically save SB3 model + VecNormalize stats, compile-safe.
+
+    Standard ``CheckpointCallback`` is incompatible with ``torch.compile``
+    because pickling a compiled module fails. This callback unwraps the
+    compiled backbone (via ``unwrap_compiled_sb3_backbone``), saves, then
+    re-compiles so training continues with the compiled module.
+
+    Trigger cadence is ``save_every_rollouts`` rollout-ends, NOT raw timesteps,
+    so the cadence aligns with the SB3 PPO update boundary.
+    """
+
+    def __init__(
+        self,
+        *,
+        save_every_rollouts: int,
+        save_dir: str | Path,
+        name_prefix: str,
+        vecnorm_filename: str | None = None,
+        save_vecnormalize: bool = True,
+        recompile: bool = True,
+        compile_mode: str = "reduce-overhead",
+        verbose: int = 0,
+    ) -> None:
+        super().__init__(verbose=verbose)
+        if save_every_rollouts < 1:
+            raise ValueError("save_every_rollouts must be >= 1")
+        self.save_every_rollouts = int(save_every_rollouts)
+        self.save_dir = Path(save_dir)
+        self.name_prefix = name_prefix
+        self.vecnorm_filename = vecnorm_filename
+        self.save_vecnormalize = bool(save_vecnormalize)
+        self.recompile = bool(recompile)
+        self.compile_mode = compile_mode
+        self._rollouts = 0
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> bool:
+        self._rollouts += 1
+        if self._rollouts % self.save_every_rollouts != 0:
+            return True
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        model = self.model
+        model_path = self.save_dir / f"{self.name_prefix}_r{self._rollouts:06d}.zip"
+        vecnorm_path: Path | None = None
+        if self.vecnorm_filename is not None:
+            vecnorm_path = self.save_dir / self.vecnorm_filename
+        elif self.save_vecnormalize:
+            vecnorm_path = matching_vecnormalize_path(model_path)
+
+        was_compiled = unwrap_compiled_sb3_backbone(model)
+        try:
+            model.save(str(model_path))
+            if vecnorm_path is not None:
+                _save_vecnormalize_from_model(model, vecnorm_path)
+        finally:
+            if was_compiled and self.recompile:
+                compile_sb3_backbone(model, enabled=True, mode=self.compile_mode)
+        if self.verbose:
+            print(f"[CompileSafeCheckpointCallback] saved {model_path.name}")
+        return True
+
+
+class CompileSafeEvalCallback(EvalCallback):
+    """EvalCallback variant that saves compile-safe best checkpoints + VecNormalize stats."""
+
+    def __init__(
+        self,
+        *args: Any,
+        save_vecnormalize: bool = True,
+        recompile: bool = True,
+        compile_mode: str = "reduce-overhead",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.save_vecnormalize = bool(save_vecnormalize)
+        self.recompile = bool(recompile)
+        self.compile_mode = compile_mode
+
+    def _on_step(self) -> bool:
+        due = self.eval_freq > 0 and self.n_calls % self.eval_freq == 0
+        if not due:
+            return True
+
+        previous_best = float(self.best_mean_reward)
+        was_compiled = unwrap_compiled_sb3_backbone(self.model)
+        try:
+            continue_training = super()._on_step()
+            if (
+                self.save_vecnormalize
+                and self.best_model_save_path is not None
+                and float(self.best_mean_reward) > previous_best
+            ):
+                _save_vecnormalize_from_model(
+                    self.model,
+                    Path(self.best_model_save_path) / "best_model_vecnormalize.pkl",
+                )
+        finally:
+            if was_compiled and self.recompile:
+                compile_sb3_backbone(self.model, enabled=True, mode=self.compile_mode)
+        return bool(continue_training)
+
+
 def _reward_kw(
     *,
     beta_is: float,
@@ -82,6 +189,123 @@ def _reward_kw(
     }
 
 
+@dataclass(frozen=True)
+class _NpyMemmapSpec:
+    path: str
+
+    def load(self) -> np.ndarray:
+        return np.load(self.path, mmap_mode="r", allow_pickle=False)
+
+
+@dataclass(frozen=True)
+class _LoaderArrayPayload:
+    features: np.ndarray | _NpyMemmapSpec
+    bid_px: np.ndarray | _NpyMemmapSpec
+    ask_px: np.ndarray | _NpyMemmapSpec
+    bid_sz: np.ndarray | _NpyMemmapSpec
+    ask_sz: np.ndarray | _NpyMemmapSpec
+    mid: np.ndarray | _NpyMemmapSpec
+    passive_buy_flow: np.ndarray | _NpyMemmapSpec
+    passive_sell_flow: np.ndarray | _NpyMemmapSpec
+    feature_names: tuple[str, ...]
+    session_ends: tuple[int, ...]
+
+    def make_loader(self, *, seed: int | None) -> Any:
+        from midmamba.data import MBP10ArrayWindowLoader
+
+        return MBP10ArrayWindowLoader(
+            _load_payload_array(self.features),
+            _load_payload_array(self.bid_px),
+            _load_payload_array(self.ask_px),
+            _load_payload_array(self.bid_sz),
+            _load_payload_array(self.ask_sz),
+            _load_payload_array(self.mid),
+            _load_payload_array(self.passive_buy_flow),
+            _load_payload_array(self.passive_sell_flow),
+            feature_names=self.feature_names,
+            seed=seed,
+            session_ends=self.session_ends,
+        )
+
+
+@dataclass
+class _MemmapPayloadStore:
+    tmpdir: Any
+    payload: _LoaderArrayPayload
+
+
+def _load_payload_array(value: np.ndarray | _NpyMemmapSpec) -> np.ndarray:
+    if isinstance(value, _NpyMemmapSpec):
+        return value.load()
+    return value
+
+
+def _as_tuple_ints(values: Any) -> tuple[int, ...]:
+    if values is None:
+        return ()
+    return tuple(int(v) for v in np.asarray(values, dtype=np.int64).tolist())
+
+
+def _require_loader_array_attr(loader: Any, name: str) -> np.ndarray:
+    if not hasattr(loader, name):
+        raise TypeError(
+            "SB3 env workers require an array-backed MBP10WindowLoader-like object; "
+            f"missing attribute {name!r}"
+        )
+    return np.asarray(getattr(loader, name))
+
+
+def _write_npy_memmap(tmpdir: str, name: str, array: np.ndarray) -> _NpyMemmapSpec:
+    path = Path(tmpdir) / f"{name}.npy"
+    np.save(path, np.ascontiguousarray(array), allow_pickle=False)
+    return _NpyMemmapSpec(str(path))
+
+
+def _loader_payload(shared_loader: Any, *, use_memmap: bool) -> tuple[_LoaderArrayPayload, _MemmapPayloadStore | None]:
+    arrays = {
+        "features": _require_loader_array_attr(shared_loader, "features"),
+        "bid_px": _require_loader_array_attr(shared_loader, "_bid_px"),
+        "ask_px": _require_loader_array_attr(shared_loader, "_ask_px"),
+        "bid_sz": _require_loader_array_attr(shared_loader, "_bid_sz"),
+        "ask_sz": _require_loader_array_attr(shared_loader, "_ask_sz"),
+        "mid": _require_loader_array_attr(shared_loader, "_mid"),
+        "passive_buy_flow": _require_loader_array_attr(shared_loader, "_passive_buy_flow"),
+        "passive_sell_flow": _require_loader_array_attr(shared_loader, "_passive_sell_flow"),
+    }
+    feature_names = tuple(str(name) for name in getattr(shared_loader, "feature_names", ()))
+    session_ends = _as_tuple_ints(getattr(shared_loader, "_session_ends", ()))
+
+    if use_memmap:
+        tmpdir = tempfile.TemporaryDirectory(prefix="midmamba-sb3-loader-")
+        payload = _LoaderArrayPayload(
+            features=_write_npy_memmap(tmpdir.name, "features", arrays["features"]),
+            bid_px=_write_npy_memmap(tmpdir.name, "bid_px", arrays["bid_px"]),
+            ask_px=_write_npy_memmap(tmpdir.name, "ask_px", arrays["ask_px"]),
+            bid_sz=_write_npy_memmap(tmpdir.name, "bid_sz", arrays["bid_sz"]),
+            ask_sz=_write_npy_memmap(tmpdir.name, "ask_sz", arrays["ask_sz"]),
+            mid=_write_npy_memmap(tmpdir.name, "mid", arrays["mid"]),
+            passive_buy_flow=_write_npy_memmap(tmpdir.name, "passive_buy_flow", arrays["passive_buy_flow"]),
+            passive_sell_flow=_write_npy_memmap(tmpdir.name, "passive_sell_flow", arrays["passive_sell_flow"]),
+            feature_names=feature_names,
+            session_ends=session_ends,
+        )
+        return payload, _MemmapPayloadStore(tmpdir=tmpdir, payload=payload)
+
+    payload = _LoaderArrayPayload(
+        features=arrays["features"],
+        bid_px=arrays["bid_px"],
+        ask_px=arrays["ask_px"],
+        bid_sz=arrays["bid_sz"],
+        ask_sz=arrays["ask_sz"],
+        mid=arrays["mid"],
+        passive_buy_flow=arrays["passive_buy_flow"],
+        passive_sell_flow=arrays["passive_sell_flow"],
+        feature_names=feature_names,
+        session_ends=session_ends,
+    )
+    return payload, None
+
+
 def make_midmamba_env_thunk(
     shared_loader: Any,
     *,
@@ -95,16 +319,14 @@ def make_midmamba_env_thunk(
     reward_kwargs: dict[str, Any],
 ) -> Callable[[], gym.Env]:
     """Return a picklable thunk for SubprocVecEnv."""
+    loader_payload = (
+        shared_loader
+        if isinstance(shared_loader, _LoaderArrayPayload)
+        else _loader_payload(shared_loader, use_memmap=False)[0]
+    )
 
     def _init() -> gym.Env:
-        from midmamba.data import MBP10WindowLoader
-
-        env_loader = MBP10WindowLoader(
-            shared_loader.features,
-            shared_loader.raw_lob,
-            feature_names=shared_loader.feature_names,
-            seed=seed_base + rank,
-        )
+        env_loader = loader_payload.make_loader(seed=seed_base + rank)
         base = MidMambaExecutionEnv(
             env_loader,
             execution_steps=execution_steps,
@@ -141,9 +363,11 @@ def build_stacked_vec_env(
         maker_rebate_bps=0.0,
         terminal_penalty_bps=100.0,
     )
+    use_worker_memmap = bool(use_subproc and n_envs > 1)
+    loader_payload, memmap_store = _loader_payload(shared_loader, use_memmap=use_worker_memmap)
     thunks = [
         make_midmamba_env_thunk(
-            shared_loader,
+            loader_payload,
             stack_size=stack_size,
             seed_base=seed,
             rank=i,
@@ -159,18 +383,19 @@ def build_stacked_vec_env(
         raw = DummyVecEnv(thunks)
     else:
         if sys.platform == "darwin":
-            # macOS spawn pickles the entire loader (features+book) to every worker.
-            # Warn so the user can opt into DummyVecEnv on large datasets.
+            # macOS spawn cannot share memmaps as cheaply as Linux page cache.
             warnings.warn(
-                "SubprocVecEnv on macOS uses spawn; the shared loader will be pickled "
-                "to every worker. Consider use_subproc=False for large datasets.",
+                "SubprocVecEnv on macOS uses spawn; MidMamba workers use a DataFrame-free "
+                "array payload, but startup can still be slower than DummyVecEnv on large datasets.",
                 stacklevel=2,
         )
         # forkserver is Linux-only; default start method is portable (spawn on macOS/Windows).
         subproc_kw: dict[str, Any] = {}
         if sys.platform.startswith("linux"):
             subproc_kw["start_method"] = "forkserver"
-        return SubprocVecEnv(thunks, **subproc_kw)
+        raw = SubprocVecEnv(thunks, **subproc_kw)
+        if memmap_store is not None:
+            raw._midmamba_memmap_store = memmap_store  # keep temp files alive for worker lifetime
     return raw
 
 
@@ -338,6 +563,22 @@ def unwrap_compiled_sb3_backbone(model: Any) -> bool:
     return True
 
 
+def matching_vecnormalize_path(model_path: str | Path) -> Path:
+    """Return the VecNormalize path convention matching an SB3 checkpoint path."""
+    path = Path(model_path)
+    return path.with_name(path.stem + "_vecnormalize.pkl")
+
+
+def _save_vecnormalize_from_model(model: Any, path: str | Path) -> bool:
+    vec_env = getattr(model, "get_vec_normalize_env", lambda: None)()
+    if vec_env is None:
+        return False
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vec_env.save(str(path))
+    return True
+
+
 def save_sb3_checkpoint(
     model: PPO,
     vec_env: VecNormalize,
@@ -404,6 +645,8 @@ def load_eval_vec_env(
 
 
 __all__ = [
+    "CompileSafeCheckpointCallback",
+    "CompileSafeEvalCallback",
     "SB3RolloutLoggerCallback",
     "build_stacked_vec_env",
     "build_vec_env",
@@ -412,6 +655,7 @@ __all__ = [
     "make_lr_schedule",
     "make_midmamba_env_thunk",
     "make_ppo",
+    "matching_vecnormalize_path",
     "save_sb3_checkpoint",
     "stacked_observation_space",
     "unwrap_compiled_sb3_backbone",

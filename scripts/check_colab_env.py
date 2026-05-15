@@ -103,6 +103,35 @@ def run_torchao_fp8_check() -> dict:
     return result
 
 
+def run_gymnasium_stack_check() -> dict:
+    """Confirm Gymnasium is present and flag legacy ``gym`` if installed.
+
+    Stable-Baselines3 and this repo use **Gymnasium** only. The unmaintained
+    ``gym`` package often remains on Colab images and triggers migration noise
+    (and NumPy-2 issues) on import; remove with ``pip uninstall -y gym``.
+    """
+    import importlib.util
+
+    result: dict[str, object] = {"name": "gymnasium_stack", "ok": False}
+    try:
+        import gymnasium as gymnasium_mod  # type: ignore
+
+        result["gymnasium_version"] = str(getattr(gymnasium_mod, "__version__", "unknown"))
+    except Exception as exc:  # pragma: no cover
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+
+    legacy = importlib.util.find_spec("gym") is not None
+    result["legacy_gym_installed"] = legacy
+    if legacy:
+        result["recommendation"] = (
+            "Legacy package 'gym' is installed. Uninstall to silence warnings and avoid NumPy 2 conflicts: "
+            "pip uninstall -y gym"
+        )
+    result["ok"] = True
+    return result
+
+
 def run_dbn_inspect_check(root: Path) -> dict:
     result: dict = {"name": "dbn_inspect", "ok": False}
     try:
@@ -150,6 +179,7 @@ def main() -> int:
 
     checks = [
         run_torch_gpu_check(),
+        run_gymnasium_stack_check(),
         run_mamba_check(),
         run_torchao_fp8_check(),
         run_dbn_inspect_check(root),

@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/status-research%20prototype-lightgrey)](#important-caveats)
 
-MidMamba is a research-grade reinforcement learning project for **optimal trade
+MidMamba is a  reinforcement learning project for **optimal trade
 execution** on Databento MBP-10 limit order book data. It trains a
 Stable-Baselines3 PPO agent with a Mamba-style temporal feature extractor to
 execute a **100,000-share buy parent order over a 30-minute horizon**.

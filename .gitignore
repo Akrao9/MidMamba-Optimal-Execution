@@ -24,6 +24,7 @@ colab_logs/
 
 # Jupyter
 .ipynb_checkpoints/
+notebooks/*.ipynb
 
 # Weights / local checkpoints (optional)
 *.pt

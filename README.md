@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/status-research%20prototype-lightgrey)](#important-caveats)
 
-MidMamba is a  reinforcement learning project for **optimal trade
+MidMamba is a reinforcement learning project for **optimal trade
 execution** on Databento MBP-10 limit order book data. It trains a
 Stable-Baselines3 PPO agent with a Mamba-style temporal feature extractor to
 execute a **100,000-share buy parent order over a 30-minute horizon**.
@@ -38,6 +38,7 @@ static policy is regime-sensitive and likely needs walk-forward retraining.
 - [Data Split](#data-split)
 - [Corrected Metric](#corrected-metric)
 - [Final Results](#final-results)
+- [Model Architecture](#model-architecture)
 - [Model And Environment](#model-and-environment)
 - [Repository Layout](#repository-layout)
 - [Installation](#installation)
@@ -120,15 +121,13 @@ baselines were evaluated on the same sampled start rows.
 Immediate execution has low measured IS but fills only a tiny fraction of the
 100,000-share parent order, so TWAP is the main practical benchmark.
 
-###  Execution Trajectory
+### Execution Trajectory
 
 <img width="1189" height="989" alt="image" src="https://github.com/user-attachments/assets/9d30410c-cd83-42e3-a8ca-3112d90e4bb7" />
 
 Single held-out execution window comparing policy inventory, cumulative
 IS+opportunity cost, and market mid price against TWAP. This plot is illustrative
 only; aggregate performance is reported in the paired March evaluation table.
-
-
 
 ### Run Summary
 
@@ -168,6 +167,91 @@ It also had weak sessions:
 This pattern suggests regime sensitivity. The policy transferred well to the
 first two March sessions after the validation period, then became mixed across
 the rest of the month.
+
+## Model Architecture
+
+MidMamba uses Mamba as a temporal encoder inside a Stable-Baselines3 PPO
+actor-critic policy. The model receives a stacked observation tensor of shape:
+
+```text
+(sequence length, feature count) = (128, 141)
+```
+
+Each timestep contains causal MBP-10 market features plus execution context such
+as remaining time, remaining inventory, last fill fraction, and TWAP deviation.
+
+The final Run 4 architecture was:
+
+| Component | Setting |
+|---|---:|
+| Sequence length | 128 frames |
+| Feature count | 141 |
+| Backbone width | 192 |
+| Temporal layers | 3 |
+| Temporal mixer | Mamba-2 on CUDA, GRU fallback for CPU |
+| Pooling | Gated attention |
+| PPO actor MLP | 256, 256 |
+| PPO critic MLP | 256, 256 |
+| Dropout | 0.0 |
+| Initial action std | about 0.3 |
+
+The feature extractor has three stages:
+
+```text
+MBP-10 + execution features
+        |
+        v
+Bid/ask-aware spatial stem
+        |
+        v
+3 x pre-norm TemporalBlock
+  LayerNorm -> Mamba-2/GRU -> residual
+  LayerNorm -> SwiGLU FFN  -> residual
+        |
+        v
+Gated attention pooling over the 128-frame sequence
+        |
+        v
+SB3 PPO actor and critic MLP heads
+```
+
+### Spatial Stem
+
+The spatial stem is designed around the structure of MBP-10 data instead of
+treating all features as a flat vector. For each 5-second timestep it builds:
+
+- a Siamese bid/ask depth view with shared side parameters,
+- bid-minus-ask interaction features,
+- pairwise level features such as depth imbalance, count imbalance, and MLOFI,
+- global engineered features such as volatility, spread, time, and execution
+  state.
+
+Small 1D convolutions mix information across the 10 book levels before the
+features are projected to the model width.
+
+### Temporal Backbone
+
+The temporal backbone is a stack of residual pre-norm blocks. In the GPU
+configuration, each block uses Mamba-2 as the sequence mixer. For CPU smoke
+tests, the same block layout can use a GRU fallback, which keeps local tests
+lightweight without changing the rest of the PPO pipeline.
+
+Each temporal block is:
+
+```text
+x = x + Mamba2(LayerNorm(x))
+x = x + SwiGLU(LayerNorm(x))
+```
+
+This lets the model summarize recent order-book dynamics, inventory pressure,
+and schedule deviation before the PPO heads choose the next execution action.
+
+### PPO Heads
+
+The pooled sequence embedding is passed to separate actor and critic MLPs. The
+actor outputs a continuous two-dimensional action mean, while PPO learns a
+state-independent log standard deviation for exploration. The critic estimates
+the value of the current execution state.
 
 ## Model And Environment
 

@@ -120,6 +120,16 @@ baselines were evaluated on the same sampled start rows.
 Immediate execution has low measured IS but fills only a tiny fraction of the
 100,000-share parent order, so TWAP is the main practical benchmark.
 
+###  Execution Trajectory
+
+<img width="1189" height="989" alt="image" src="https://github.com/user-attachments/assets/9d30410c-cd83-42e3-a8ca-3112d90e4bb7" />
+
+Single held-out execution window comparing policy inventory, cumulative
+IS+opportunity cost, and market mid price against TWAP. This plot is illustrative
+only; aggregate performance is reported in the paired March evaluation table.
+
+
+
 ### Run Summary
 
 | Run | Main change | Best val reward | March policy IS+opp | Policy minus TWAP | Mean filled | Mean remaining | Takeaway |

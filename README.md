@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![RL](https://img.shields.io/badge/RL-Stable--Baselines3%20PPO-orange)](https://stable-baselines3.readthedocs.io/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Status](https://img.shields.io/badge/status-research%20prototype-lightgrey)](#important-caveats)
+[![Status](https://img.shields.io/badge/status-research%20prototype-lightgrey)](#limitations)
 
 MidMamba is a reinforcement learning project for **optimal trade
 execution** on Databento MBP-10 limit order book data. It trains a
@@ -21,6 +21,24 @@ tests.
 > March test set after correcting for unfinished inventory. The final conclusion
 > is that this setup needs walk-forward retraining, drift monitoring, or regime
 > gating before it can be considered robust.
+
+## Key Results
+
+| Question | Result |
+|---|---|
+| Task | Buy 100,000 shares over sampled 30-minute windows |
+| Main benchmark | TWAP on the same paired windows |
+| Best validation checkpoint | Run 4, `+1.88` mean reward |
+| Held-out test | March 2025, 200 paired windows |
+| Best policy March IS+opp | `0.709 bps` |
+| TWAP March IS+opp | `0.172 bps` |
+| Policy minus TWAP | `+0.537 bps`, lower would be better |
+| Mean policy fill | `98,441 / 100,000` shares |
+| Main finding | Localized early-March edge, but no month-wide TWAP beat |
+
+In plain English: the RL policy learned to execute and sometimes beat TWAP, but
+the final static model was not reliably better than TWAP across the full held-out
+month once unfinished inventory was penalized correctly.
 
 ### March Held-Out Daily IS+opp
 <img width="1389" height="790" alt="image" src="https://github.com/user-attachments/assets/84c4ae3e-ef21-48c3-8101-9d12c6bc70d7" />
@@ -44,7 +62,7 @@ static policy is regime-sensitive and likely needs walk-forward retraining.
 - [Installation](#installation)
 - [Smoke Runs](#smoke-runs)
 - [Full Training](#full-training)
-- [Important Caveats](#important-caveats)
+- [Limitations](#limitations)
 - [Future Work](#future-work)
 
 ## Problem Setup
@@ -433,13 +451,16 @@ USE_NUMBA = False
 Training artifacts such as checkpoints, VecNormalize stats, plots, and raw
 Databento files are intentionally excluded from GitHub.
 
-## Important Caveats
+## Limitations
 
 - This is a research prototype, not a production trading system.
-- Results cover one instrument/data slice and one held-out month.
+- The final static policy did not beat TWAP month-wide on corrected `IS+opp`.
+- Results cover one instrument/data slice and one held-out month, so they should
+  not be interpreted as a general trading edge.
 - MBP-10 does not provide Level-3 queue identity, so passive fills are
-  approximate.
-- The static policy did not beat TWAP month-wide after corrected accounting.
+  approximate rather than exact queue-position simulation.
+- Transaction-cost and fill assumptions are simplified relative to live trading.
+- The policy was evaluated offline on historical replay, not in a live market.
 - Repeated tuning on March would invalidate March as a clean held-out test.
 
 ## Future Work

@@ -22,6 +22,15 @@ tests.
 > is that this setup needs walk-forward retraining, drift monitoring, or regime
 > gating before it can be considered robust.
 
+### March Held-Out Daily IS+opp
+<img width="1389" height="790" alt="image" src="https://github.com/user-attachments/assets/84c4ae3e-ef21-48c3-8101-9d12c6bc70d7" />
+
+The policy strongly outperformed TWAP on the first two March sessions, but the
+edge became mixed later in the month. This supports the main conclusion that a
+static policy is regime-sensitive and likely needs walk-forward retraining.
+
+
+
 ## Contents
 
 - [Problem Setup](#problem-setup)

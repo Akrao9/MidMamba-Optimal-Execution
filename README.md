@@ -1,85 +1,106 @@
 # MidMamba
 
-MidMamba is a reinforcement-learning research project for **optimal trade
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![RL](https://img.shields.io/badge/RL-Stable--Baselines3%20PPO-orange)](https://stable-baselines3.readthedocs.io/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Status](https://img.shields.io/badge/status-research%20prototype-lightgrey)](#important-caveats)
+
+MidMamba is a research-grade reinforcement learning project for **optimal trade
 execution** on Databento MBP-10 limit order book data. It trains a
-Stable-Baselines3 PPO agent with a Mamba-style temporal backbone to execute a
-100,000-share parent buy order over a 30-minute horizon.
+Stable-Baselines3 PPO agent with a Mamba-style temporal feature extractor to
+execute a **100,000-share buy parent order over a 30-minute horizon**.
 
-The final result is deliberately honest:
+The project includes the full execution research loop: market-data loading,
+causal LOB features, an MBP-10 replay simulator, PPO training, paired baseline
+evaluation, corrected implementation-shortfall accounting, run reports, and
+tests.
 
-> The agent learned meaningful execution behavior and showed strong localized
-> outperformance on selected March 2025 sessions, especially immediately after
-> the validation period. However, a single static model did **not** beat TWAP
-> over the full held-out March month on the corrected implementation-shortfall
-> metric. The project therefore motivates rolling walk-forward retraining and
-> regime monitoring rather than claiming a profitable static execution policy.
+> Outcome: the learned policy found localized execution edge on selected March
+> 2025 sessions, especially immediately after the validation period. As a single
+> static monthly model, however, it did not beat TWAP over the full held-out
+> March test set after correcting for unfinished inventory. The final conclusion
+> is that this setup needs walk-forward retraining, drift monitoring, or regime
+> gating before it can be considered robust.
 
-This repo is best read as a complete applied RL execution study: simulator,
-features, training loop, corrected accounting, paired baselines, ablations, and
-negative results included.
+## Contents
 
-## What This Project Builds
+- [Problem Setup](#problem-setup)
+- [What Is Implemented](#what-is-implemented)
+- [Data Split](#data-split)
+- [Corrected Metric](#corrected-metric)
+- [Final Results](#final-results)
+- [Model And Environment](#model-and-environment)
+- [Repository Layout](#repository-layout)
+- [Installation](#installation)
+- [Smoke Runs](#smoke-runs)
+- [Full Training](#full-training)
+- [Important Caveats](#important-caveats)
+- [Future Work](#future-work)
+
+## Problem Setup
+
+Each episode is a 30-minute execution problem:
+
+| Field | Value |
+|---|---:|
+| Side | Buy |
+| Parent quantity | 100,000 shares |
+| Horizon | 360 steps |
+| Step size | 5 seconds |
+| Total duration | 30 minutes |
+| Benchmark | TWAP over the same window |
+
+The environment samples a start row from the trading day, replays the next
+30 minutes of MBP-10 book states, and asks whether the policy can execute the
+parent order with lower implementation shortfall than standard baselines.
+
+## What Is Implemented
 
 - Causal 5-second MBP-10 snapshots from Databento DBN files.
-- Stationary limit-order-book features, including price-aware MLOFI, realized
-  volatility, and regular-trading-hours time features.
-- A historical execution simulator over visible MBP-10 depth.
-- Passive and aggressive fill models suitable for MBP-10, which has price-level
-  depth but not Level-3 queue identity.
-- A continuous-action PPO environment with inventory and time state.
-- A Mamba/GRU-compatible sequence feature extractor for Stable-Baselines3 PPO.
-- Baseline evaluation against immediate execution, TWAP, and Almgren-Chriss.
-- Corrected implementation-shortfall accounting that penalizes leftover
-  inventory through opportunity cost.
-
-## Research Question
-
-Can a learned execution policy improve implementation shortfall versus TWAP on
-held-out limit-order-book data while still completing the parent order?
-
-Short answer:
-
-**Not reliably as a single static monthly model.** The policy found pockets of
-edge, but the month-wide held-out March result did not beat TWAP after correcting
-for unfinished inventory.
+- Stationary limit order book features, including price-aware MLOFI, realized
+  volatility, spread/depth features, and regular-trading-hours time features.
+- Historical execution replay over visible MBP-10 depth.
+- Passive and aggressive fill approximations compatible with MBP-10 data.
+- Continuous-action PPO environment with time, inventory, and execution state.
+- Mamba/GRU-compatible sequence feature extractor for Stable-Baselines3 PPO.
+- Baselines: immediate execution, TWAP, and Almgren-Chriss.
+- Corrected implementation-shortfall accounting for leftover inventory.
+- Unit tests for features, simulator behavior, baseline evaluation, PPO helpers,
+  and checkpoint safety gates.
 
 ## Data Split
 
 The final experiments used a strict temporal split:
 
 | Split | Period | Use |
-|---|---:|---|
+|---|---|---|
 | Train | January 2025 plus February before 2025-02-24 | PPO training |
 | Validation | February 2025 from 2025-02-24 onward | Best checkpoint selection |
 | Test | March 2025 | Held-out evaluation only |
 
-All runs used regular trading hours only, 09:30 to 16:00 New York time, sampled
-to causal 5-second MBP-10 snapshots. The execution horizon was 360 steps, or 30
-minutes.
-
-Raw Databento DBN files are not meant to be committed to GitHub. Keep them under
-`data/` locally or in Drive/Colab and sync code separately.
+All experiments use regular trading hours only, 09:30 to 16:00 New York time.
+Raw Databento DBN files are intentionally excluded from GitHub and should be
+kept locally under `/data/` or in a private Drive/Colab workspace.
 
 ## Corrected Metric
 
-The key lesson of the project was that raw implementation shortfall can be
-misleading if a policy leaves difficult inventory unfilled.
-
-Final reporting uses:
+Early experiments showed that raw implementation shortfall can be misleading if
+the policy leaves difficult residual inventory unfilled. Final reporting uses a
+corrected metric:
 
 ```text
 IS+opp = realized implementation shortfall
          + opportunity cost of remaining inventory marked to final mid
 ```
 
-Lower is better. A policy must beat TWAP on **IS+opp**, not just raw IS.
+Lower is better. A policy must beat TWAP on `IS+opp`, not just raw IS.
 
 ## Final Results
 
-March 2025 held-out evaluation used 200 paired windows. Policy and baselines
-were evaluated on the same sampled start rows.
+March 2025 held-out evaluation used 200 paired windows. The policy and all
+baselines were evaluated on the same sampled start rows.
 
-### Baselines
+### Baseline Performance
 
 | Strategy | IS+opp mean bps | 95 pct CI halfwidth | IS+opp std | Mean filled |
 |---|---:|---:|---:|---:|
@@ -87,27 +108,27 @@ were evaluated on the same sampled start rows.
 | TWAP | 0.172 | 1.217 | 8.782 | 99,964 |
 | Almgren-Chriss | 0.178 | 1.217 | 8.781 | 100,000 |
 
-Immediate execution has low IS but fills only a tiny fraction of the parent
-order, so TWAP is the main benchmark.
+Immediate execution has low measured IS but fills only a tiny fraction of the
+100,000-share parent order, so TWAP is the main practical benchmark.
 
 ### Run Summary
 
-| Run | Main Change | Best Val Reward | March Policy IS+opp | Policy - TWAP | Mean Filled | Mean Remaining | Conclusion |
+| Run | Main change | Best val reward | March policy IS+opp | Policy minus TWAP | Mean filled | Mean remaining | Takeaway |
 |---|---|---:|---:|---:|---:|---:|---|
 | Run 1 | First full PPO run | -1.554 | not corrected | not corrected | 94,104 | 5,895 | Apparent edge, but under-completed |
-| Run 2 | 80 envs, stronger completion | -2.81 | 0.545 | 0.373 | 88,361 | 11,639 | Raw edge was exposed as incomplete-execution leakage |
-| Run 3 | Corrected final liquidation and IS+opp | -1.88 | 0.892 | 0.720 | 98,695 | 1,305 | Completion fixed, no TWAP edge |
+| Run 2 | 80 envs, stronger completion | -2.81 | 0.545 | 0.373 | 88,361 | 11,639 | Raw edge exposed as incomplete-execution leakage |
+| Run 3 | Final liquidation and IS+opp | -1.88 | 0.892 | 0.720 | 98,695 | 1,305 | Completion fixed, no TWAP edge |
 | Run 4 | Lower schedule pressure, NumPy simulator | +1.88 | 0.709 | 0.537 | 98,441 | 1,559 | Best corrected run, still worse than TWAP |
 
-Run 4 is the final best corrected policy in this project. It improved over Run 3
-by about 0.18 bps on March IS+opp, but still underperformed TWAP by about 0.54
-bps.
+Run 4 is the best corrected policy in this project. It improved over Run 3 by
+about 0.18 bps on March `IS+opp`, but still underperformed TWAP by about
+0.54 bps.
 
-## Daily Held-Out Insight
+### Daily Held-Out Behavior
 
-Run 4 showed strong localized outperformance:
+The policy did show strong localized outperformance on some days:
 
-| Date | Policy IS+opp | TWAP IS+opp | Policy - TWAP | Win Rate | Filled |
+| Date | Policy IS+opp | TWAP IS+opp | Policy minus TWAP | Win rate | Filled |
 |---|---:|---:|---:|---:|---:|
 | 2025-03-03 | -18.147 | -3.093 | -15.054 | 88.9 pct | 100,000 |
 | 2025-03-04 | -24.381 | -3.231 | -21.150 | 100.0 pct | 100,000 |
@@ -116,40 +137,37 @@ Run 4 showed strong localized outperformance:
 | 2025-03-17 | -7.202 | -2.964 | -4.238 | 71.4 pct | 100,000 |
 | 2025-03-26 | -5.520 | -0.600 | -4.920 | 77.8 pct | 100,000 |
 
-But the policy also had weak days:
+It also had weak sessions:
 
-| Date | Policy - TWAP |
+| Date | Policy minus TWAP |
 |---|---:|
 | 2025-03-10 | +10.354 bps |
 | 2025-03-12 | +10.777 bps |
 | 2025-03-19 | +9.771 bps |
 | 2025-03-24 | +5.633 bps |
 
-This is the main research conclusion:
-
-> The policy appears regime-sensitive. It transfers strongly to the first two
-> March sessions after the validation period, then becomes mixed. A realistic
-> deployment would need rolling walk-forward retraining, drift monitoring, or a
-> regime filter.
+This pattern suggests regime sensitivity. The policy transferred well to the
+first two March sessions after the validation period, then became mixed across
+the rest of the month.
 
 ## Model And Environment
 
 ### Observation
 
-Each observation contains a frame stack of market features plus internal agent
+Each observation contains a sequence of market features plus internal execution
 state:
 
 - stationary MBP-10 book features,
 - MLOFI-style order-flow imbalance,
-- realized volatility features,
-- RTH time-of-day features,
+- realized volatility,
+- regular-trading-hours time features,
 - remaining time,
 - remaining inventory,
 - recent execution state.
 
 ### Action
 
-The PPO policy emits a continuous 2D action:
+The PPO policy emits a continuous two-dimensional action:
 
 ```text
 action[0]: schedule-relative cumulative target
@@ -163,15 +181,15 @@ action[1]: passive/aggressive control
 ```
 
 On the final step, the environment attempts marketable liquidation of all
-remaining visible inventory. This prevents the policy from scoring well by
-leaving inventory behind.
+remaining visible inventory. This prevents a policy from scoring well simply by
+not trading difficult residual inventory.
 
 ### Reward
 
 The final reward includes:
 
 - implementation shortfall,
-- a soft schedule penalty,
+- soft schedule pressure,
 - volatility-scaled completion risk,
 - hard terminal leftover-inventory penalty,
 - taker fees and maker rebate accounting.
@@ -181,15 +199,14 @@ penalties are not clipped.
 
 ## Repository Layout
 
-| Path | Role |
+| Path | Description |
 |---|---|
-| `notebooks/colab_full_train.ipynb` | Full Colab training and held-out evaluation notebook |
 | `src/midmamba/data/` | DBN loading, causal snapshots, feature generation, window sampling |
 | `src/midmamba/env/` | MBP-10 execution replay environments |
-| `src/midmamba/eval/` | Immediate, TWAP, Almgren-Chriss, and policy evaluation helpers |
+| `src/midmamba/eval/` | Baseline and policy evaluation helpers |
 | `src/midmamba/models/` | LOB spatial stem and Mamba/GRU sequence modules |
 | `src/midmamba/rl/` | Stable-Baselines3 policy, vec-env, schedules, checkpoint utilities |
-| `scripts/train_ppo_smoke.py` | Small local PPO smoke train |
+| `scripts/train_ppo_smoke.py` | Minimal local PPO smoke training |
 | `scripts/evaluate_execution.py` | CLI baseline and checkpoint evaluation |
 | `scripts/check_colab_env.py` | Colab GPU/Mamba/DBN environment checks |
 | `docs/FIRST_RUN_REPORT.txt` | Run 1 report |
@@ -200,7 +217,7 @@ penalties are not clipped.
 
 ## Installation
 
-Local CPU/dev install:
+Local CPU/dev setup:
 
 ```bash
 python -m venv .venv
@@ -230,7 +247,7 @@ python -m pytest
 python -m ruff check src scripts tests
 ```
 
-The project includes tests for:
+The test suite covers:
 
 - causal feature construction,
 - MBP-10 book walking and passive fill approximations,
@@ -239,7 +256,7 @@ The project includes tests for:
 - paired baseline evaluation,
 - Stable-Baselines3 PPO utilities.
 
-## Minimal Local Smoke Runs
+## Smoke Runs
 
 Synthetic PPO smoke train:
 
@@ -287,7 +304,7 @@ python scripts/evaluate_execution.py \
 
 ## Full Training
 
-The full experiment lives in:
+The full Colab workflow is in:
 
 ```text
 notebooks/colab_full_train.ipynb
@@ -310,35 +327,30 @@ REWARD_CLIP = 5.0
 USE_NUMBA = False
 ```
 
-The notebook saves:
-
-- best validation checkpoint,
-- matching VecNormalize stats,
-- final checkpoint,
-- training/evaluation reports,
-- March held-out plots.
+Training artifacts such as checkpoints, VecNormalize stats, plots, and raw
+Databento files are intentionally excluded from GitHub.
 
 ## Important Caveats
 
-- This is **not** a production trading system.
-- Results are on one instrument/data slice and one held-out month.
-- MBP-10 does not provide Level-3 queue identity, so passive fills are estimated.
+- This is a research prototype, not a production trading system.
+- Results cover one instrument/data slice and one held-out month.
+- MBP-10 does not provide Level-3 queue identity, so passive fills are
+  approximate.
 - The static policy did not beat TWAP month-wide after corrected accounting.
-- Repeated tuning on March would invalidate March as a held-out test.
+- Repeated tuning on March would invalidate March as a clean held-out test.
 
 ## Future Work
 
-The most important next step is not another static monthly run. It is a
-walk-forward protocol:
+The next serious experiment should use a walk-forward protocol:
 
 ```text
 Train on a recent rolling window.
 Validate on the latest few sessions.
-Test/deploy on the next one to five sessions.
+Test or deploy on the next one to five sessions.
 Slide forward and repeat.
 ```
 
-If April data is available, the next clean experiment would be:
+If April data is available, a clean next split would be:
 
 ```text
 Train:      January + February + early March
@@ -346,9 +358,9 @@ Validate:   later March
 Test:       April
 ```
 
-The final hypothesis is that MidMamba needs retraining or regime gating because
-the learned execution edge appears to decay as the market moves away from the
-validation period.
+The working hypothesis is that MidMamba needs rolling retraining or regime
+gating because the learned execution edge decays as market conditions move away
+from the validation period.
 
 ## References
 
@@ -360,4 +372,4 @@ validation period.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).
